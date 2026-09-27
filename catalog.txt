@@ -1,0 +1,5 @@
+# Products shown in the 2WIN VFX Hub ADD-ONS tab.
+# id | name | description | store URL | pack or module
+mv-essentials-1 | MV Essentials 1 | 17 Pre/Post transitions: blurs, flashes, shakes, zooms and slides. | https://store.2winvisuals.com | pack
+mv-essentials-2 | MV Essentials 2 | Flickers, 1-2 frame hits, darkness and ripple distortions. | https://store.2winvisuals.com | pack
+auto-vfx | Auto VFX | Drop effects across every cut on your timeline in one click. | https://store.2winvisuals.com | module
