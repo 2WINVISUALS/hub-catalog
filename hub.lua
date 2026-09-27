@@ -928,7 +928,11 @@ end
 -- "Both" is the two variants in sequence; each anchors itself.
 local function applyGroup(group, which)
     local wanted = {}
-    if group.only then
+    if group.only and group.only.clip then
+        -- a clip effect without Pre/Post variants works on the selected clip
+        -- itself, whichever apply button was used
+        wanted[1] = group.only
+    elseif group.only then
         for _, side in ipairs(which == "BOTH" and { "PRE", "POST" } or { which }) do
             local effect = {}
             for k, v in pairs(group.only) do effect[k] = v end
