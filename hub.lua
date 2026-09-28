@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.0"
+local HUB_VERSION = "1.1"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -306,12 +306,38 @@ local PACKS = {}          -- ordered list of installed packs
 local STORE = {}          -- products for the Add-ons tab, by id
 local STORE_ORDER = {}
 
+-- Top-level sections group the categories. A pack may place its own categories
+-- with a [sections] block ("LYRIC FX = TEXT"); anything unassigned is an EFFECT.
+local SECTION_ORDER = { "EFFECTS", "TEXT", "CLIP FX", "OVERLAYS" }
+local DEFAULT_SECTION = { TITLES = "TEXT", ["LYRIC EFFECTS"] = "TEXT", LYRICS = "TEXT",
+                          ["CLIP FX"] = "CLIP FX", OVERLAYS = "OVERLAYS" }
+local PACK_SECTIONS = {}
+local function sectionOf(cat)
+    return PACK_SECTIONS[cat] or DEFAULT_SECTION[cat] or "EFFECTS"
+end
+
+-- Effect-type order for the list and the category buttons: ALL shows the effects
+-- grouped by type in this order (alphabetical inside a type); unknown types follow
+-- the known ones of their section, in the order packs introduce them.
+local CATEGORY_ORDER = { "FLASHES", "SHAKES", "BLURS", "TRANSFORMS", "MOVES", "1 FRAMERS", "FLICKERS",
+                         "DISTORTIONS", "DISSOLVES", "CLIP FX", "TITLES", "LYRIC EFFECTS", "LYRICS", "OVERLAYS" }
+local CATEGORY_RANK = {}
+for i, c in ipairs(CATEGORY_ORDER) do CATEGORY_RANK[c] = i end
+local function sectionRank(sec)
+    for i, s in ipairs(SECTION_ORDER) do if s == sec then return i end end
+    return #SECTION_ORDER + 1
+end
+
 local function addStoreLine(line)
     local id, name, desc, url, kind = line:match("^%s*([^|]-)%s*|%s*([^|]-)%s*|%s*([^|]-)%s*|%s*([^|]-)%s*|?%s*([^|]*)%s*$")
     if not (id and safeName(id) and name ~= "" and safeUrl(url)) then return end
     kind = (kind ~= nil and kind ~= "") and kind:lower() or "pack"
+    -- "pack,soon" / "module,soon": listed as COMING SOON (older Hubs just see a product)
+    local soon = kind:find("soon", 1, true) ~= nil
+    kind = kind:gsub("[,%s]*soon", ""):gsub("^[,%s]+", "")
+    if kind == "" then kind = "pack" end
     if not STORE[id] then STORE_ORDER[#STORE_ORDER + 1] = id end
-    STORE[id] = { id = id, name = name, desc = desc, url = url, kind = kind }
+    STORE[id] = { id = id, name = name, desc = desc, url = url, kind = kind, soon = soon }
 end
 
 local function readPack(id)
@@ -326,6 +352,10 @@ local function readPack(id)
             -- skip
         elseif line:lower() == "[effects]" then section = "effects"
         elseif line:lower() == "[store]" then section = "store"
+        elseif line:lower() == "[sections]" then section = "sections"
+        elseif section == "sections" then
+            local cat, sec = line:match("^(.-)%s*=%s*(.-)$")
+            if cat and cat ~= "" and sec ~= "" and #sec <= 20 then PACK_SECTIONS[cat:upper()] = sec:upper() end
         elseif section == "head" then
             local k, v = line:match("^([%w_]+)%s*=%s*(.-)$")
             if k then pack[k:lower()] = v end
@@ -363,7 +393,7 @@ local function loadStoreFile(path)
 end
 
 local function discoverPacks()
-    PACKS, STORE, STORE_ORDER = {}, {}, {}
+    PACKS, STORE, STORE_ORDER, PACK_SECTIONS = {}, {}, {}, {}
     -- the online product list (last good download) replaces the shipped copy
     loadStoreFile(fileExists(CATALOG_CACHE) and CATALOG_CACHE or STORE_FILE)
     for _, entry in ipairs(listDir(PACKS_DIR .. "/*")) do
@@ -452,6 +482,14 @@ local function buildCatalogue()
             end
         end
     end
+    local seen = {}
+    for i, c in ipairs(CATEGORIES) do seen[c] = i end
+    table.sort(CATEGORIES, function(a, b)
+        local sa, sb = sectionRank(sectionOf(a)), sectionRank(sectionOf(b))
+        if sa ~= sb then return sa < sb end
+        local ra, rb = CATEGORY_RANK[a] or (100 + seen[a]), CATEGORY_RANK[b] or (100 + seen[b])
+        return ra < rb
+    end)
 end
 
 -- Ordered, de-duplicated effect names (one per Pre/Post pair).
@@ -613,7 +651,11 @@ local function buildGroups()
         g.preview = any.preview
         g.pack    = any.pack
     end
+    local rank = {}
+    for i, c in ipairs(CATEGORIES) do rank[c] = i end
     table.sort(order, function(a, b)
+        local ra, rb = rank[a.type] or 999, rank[b.type] or 999
+        if ra ~= rb then return ra < rb end
         return displayName(a.base):lower() < displayName(b.base):lower()
     end)
     GROUPS = order
@@ -749,6 +791,44 @@ local function applyClipEffect(effect, targetsOverride)
     local playhead = tl:GetCurrentTimecode()
     local isPre = (effect.cat == "PRE")
     local placed, failed = 0, nil
+    -- effect.direct: the comp goes straight onto the selected clip, no duplicate.
+    -- A comp that fails to load is removed again; the clip itself is never deleted.
+    if effect.direct then
+        for _, t in ipairs(targets) do
+            local shot = t.item
+            if not (shot and shot:GetMediaPoolItem()) then
+                failed = "select a video clip (not an effect clip)"
+            else
+                local before = {}
+                for _, n in ipairs(shot:GetFusionCompNameList() or {}) do before[n] = true end
+                local comp = shot:ImportFusionComp(effect.setting)
+                local macro
+                if comp then
+                    for _, tool in pairs(comp:GetToolList(false)) do
+                        if type(tool) ~= "number" and tool.ID == "MacroOperator" then macro = tool end
+                    end
+                end
+                if not macro then
+                    for _, n in ipairs(shot:GetFusionCompNameList() or {}) do
+                        if not before[n] then shot:DeleteFusionCompByName(n) end
+                    end
+                    failed = "could not load " .. effect.name
+                else
+                    local mediaIn  = comp:AddTool("MediaIn",  false, -100, 0)
+                    local mediaOut = comp:AddTool("MediaOut", false,  400, 0)
+                    mediaIn:SetInput("DeepOutputMode", 0)
+                    macro:ConnectInput(macro:FindMainInput(1).ID, mediaIn)
+                    mediaOut:ConnectInput("Input", macro)
+                    placed = placed + 1
+                end
+            end
+        end
+        if playhead then tl:SetCurrentTimecode(playhead) end
+        if placed == 0 then return "Failed: " .. (failed or "unknown error") end
+        local msg = displayName(effect.name) .. " -> applied to " .. placed .. " clip" .. (placed == 1 and "" or "s")
+        if failed then msg = msg .. "  (" .. (#targets - placed) .. " failed: " .. failed .. ")" end
+        return msg
+    end
     for _, t in ipairs(targets) do
         local shot = t.item
         if isPre then
@@ -777,11 +857,31 @@ local function applyClipEffect(effect, targetsOverride)
                 if not mpi then failed = why end
             end
             local dest = mpi and destinationTrack(tl, track, s, e)
-            local copy = dest and place(mp, mpi, dest, s, e - s, left)
+            local copy
+            if dest then
+                -- Source frames count at the file's own rate, so a file at another rate
+                -- than the timeline (24 on 23.976, 30 on 29.97...) lands a frame off.
+                -- Place, measure against the original, nudge, retry (2 tries typical).
+                local k = (tonumber(mpi:GetClipProperty("FPS")) or 0) / (tonumber(tl:GetSetting("timelineFrameRate")) or 0)
+                if not (k > 0 and k < 1000) then k = 1 end
+                local sf, ef = left * k, (left + e - s) * k
+                for _ = 1, 4 do
+                    copy = place(mp, mpi, dest, s, ef - sf, sf)
+                    if not copy or copy:GetStart() == nil then copy = nil break end
+                    local gs, ge, gl = math.floor(copy:GetStart()), math.floor(copy:GetEnd()), copy:GetLeftOffset()
+                    if gs == s and ge == e and gl == left then break end
+                    tl:DeleteClips({ copy }, false); copy = nil
+                    local dl = left - gl
+                    sf = sf + dl * k
+                    ef = ef + (dl + (e - ge) - (s - gs)) * k
+                end
+            end
             if not mpi then
                 -- already reported
+            elseif not dest then
+                failed = "could not free up a track above"
             elseif not copy then
-                failed = "Resolve refused to duplicate the clip"
+                failed = "could not line the duplicate up with the original"
             elseif copy:GetLeftOffset() ~= left or math.floor(copy:GetStart()) ~= s
                    or math.floor(copy:GetEnd()) ~= e then
                 tl:DeleteClips({ copy }, false)
@@ -875,18 +975,37 @@ local function applyEffect(effect, targetsOverride)
     local full = (natural and natural > 0) and natural or nil
     local function lengthOf(item) return math.floor(item:GetEnd()) - math.floor(item:GetStart()) end
 
+    -- effect.place (titles, lyrics, overlays) instead of Pre/Post:
+    --   START    at the clip's head, own length       PLAYHEAD at the playhead, own length
+    --   ONCUT    centred on the cut at the clip's head FULL     at the head, trimmed to the clip
+    local mode = effect.place
+    local function anchor(t, len)
+        if mode == "PLAYHEAD" then return t.playhead end
+        if mode == "ONCUT" then return t.s - math.floor(len / 2) end
+        if mode then return t.s end
+        return isPre and (t.s - len) or t.s
+    end
+
     for _, t in ipairs(targets) do
         local span = t.e - t.s
         local expect = trueLength[key] or full or span
-        if not isPre and expect > span then expect = span end
         local request = full or span
-        if trueLength[key] and expect < trueLength[key] then
-            request = math.max(1, math.floor(expect * request / trueLength[key] + 0.5))
+        if mode == "FULL" then
+            if expect > span then
+                request = math.max(1, math.floor(span * request / expect + 0.5)); expect = span
+            end
+        elseif not mode then
+            if not isPre and expect > span then expect = span end
+            if trueLength[key] and expect < trueLength[key] then
+                request = math.max(1, math.floor(expect * request / trueLength[key] + 0.5))
+            end
         end
-        if isPre and t.s - expect < tl:GetStartFrame() then
-            failed = "not enough footage before this cut"
+        local at = anchor(t, expect)
+        if not at then
+            failed = "could not read the playhead"
+        elseif at < tl:GetStartFrame() then
+            failed = isPre and "not enough footage before this cut" or "not enough room before this cut"
         else
-            local at = isPre and (t.s - expect) or t.s
             local dest = destinationTrack(tl, t.track, at, at + expect)
             if not dest then
                 failed = "could not free up a track above"
@@ -897,10 +1016,10 @@ local function applyEffect(effect, targetsOverride)
                 else
                     local got = lengthOf(item)
                     if request == full then trueLength[key] = got end
-                    -- On first use the real length was unknown, so a Pre may
-                    -- have landed early: put it back where it belongs.
-                    if isPre and got ~= expect then
-                        local fixed = t.s - got
+                    -- On first use the real length was unknown, so a Pre (or a
+                    -- centred overlay) may have landed off: put it where it belongs.
+                    local fixed = anchor(t, got)
+                    if (isPre or mode == "ONCUT") and fixed ~= at then
                         tl:DeleteClips({ item }, false)
                         if fixed < tl:GetStartFrame() then
                             item = nil
@@ -908,7 +1027,7 @@ local function applyEffect(effect, targetsOverride)
                         else
                             item = place(mp, preset, dest, fixed, request)
                             if item then got = lengthOf(item)
-                            else failed = "Resolve refused the corrected PRE placement" end
+                            else failed = "Resolve refused the corrected placement" end
                         end
                     end
                     if item then placed = placed + 1; dropped = got end
@@ -925,9 +1044,52 @@ local function applyEffect(effect, targetsOverride)
     return msg
 end
 
+-- The playhead as a timeline frame number (the same numbering as GetStart).
+local function playheadFrame(tl)
+    local tc = tl:GetCurrentTimecode() or ""
+    local h, m, s, f = tc:match("^(%d+)[:;](%d+)[:;](%d+)[:;.](%d+)$")
+    if not h then return nil end
+    local base = math.floor((tonumber(tl:GetSetting("timelineFrameRate")) or 24) + 0.5)
+    local minutes = tonumber(h) * 60 + tonumber(m)
+    local frames = (minutes * 60 + tonumber(s)) * base + tonumber(f)
+    if tc:find(";") then   -- drop-frame timecode skips frame numbers every minute but each tenth
+        frames = frames - math.floor(base / 15) * (minutes - math.floor(minutes / 10))
+    end
+    return frames
+end
+
+-- Placement actions besides PRE / BOTH / POST (see placementMode):
+--   START PLAYHEAD ONCUT FULL  - titles, lyrics, overlays at their own length
+--   DUPLICATE DIRECT           - clip FX on a duplicate of the shot, or on the shot itself
+local PLACE_ACTIONS = { START = true, PLAYHEAD = true, ONCUT = true, FULL = true }
+
 -- "Both" is the two variants in sequence; each anchors itself.
-local function applyGroup(group, which)
+local function applyGroup(group, which, targetsOverride)
     local wanted = {}
+    if PLACE_ACTIONS[which] or which == "DUPLICATE" or which == "DIRECT" then
+        local src = group.only or group.post or group.pre
+        local effect = {}
+        for k, v in pairs(src) do effect[k] = v end
+        if which == "DUPLICATE" or which == "DIRECT" then
+            if not effect.clip then return displayName(group.base) .. " is not a clip effect" end
+            effect.direct, effect.cat = (which == "DIRECT"), "ONLY"
+        else
+            effect.place, effect.cat = which, "POST"
+        end
+        local tl = currentTimeline()
+        if not tl then return "No timeline is open." end
+        local targets, err = targetsOverride, nil
+        if not targets then
+            targets, err = findTarget(tl)
+            if not targets then return err end
+        end
+        if which == "PLAYHEAD" then
+            -- one placement, at the playhead, above the first target's track
+            targets = { { item = targets[1].item, track = targets[1].track, s = targets[1].s, e = targets[1].e,
+                          playhead = playheadFrame(tl) } }
+        end
+        return applyEffect(effect, targets)
+    end
     if group.only and group.only.clip then
         -- a clip effect without Pre/Post variants works on the selected clip
         -- itself, whichever apply button was used
@@ -947,8 +1109,11 @@ local function applyGroup(group, which)
     local tl = currentTimeline()
     if not tl then return "No timeline is open." end
     -- Capture the targets once: PRE can change Resolve's selection.
-    local targets, err = findTarget(tl)
-    if not targets then return err end
+    local targets, err = targetsOverride, nil
+    if not targets then
+        targets, err = findTarget(tl)
+        if not targets then return err end
+    end
     local parts = {}
     for _, effect in ipairs(wanted) do parts[#parts + 1] = applyEffect(effect, targets) end
     return table.concat(parts, "   |   ")
@@ -1029,25 +1194,63 @@ local STYLE = [[
 local APPLY_STYLE = "font-size:15px; font-weight:800; letter-spacing:2px;"
 local TAB_STYLE   = "font-size:13px; font-weight:800; letter-spacing:3px;"
 
--- Category filter buttons come from the installed packs: ALL, each category
--- in pack order, then FAVS; four per row.
-local FILTERS = {}
-local function filterRows()
-    FILTERS = { { id = "FiltAll", cat = "ALL", label = "ALL" } }
-    for i, cat in ipairs(CATEGORIES) do
-        FILTERS[#FILTERS + 1] = { id = "FiltCat" .. i, cat = cat, label = cat }
+-- Filters, two levels, all from the installed packs:
+--   sections   ALL | EFFECTS | TEXT | CLIP FX | OVERLAYS | FAVS  (only those in use)
+--   categories the chosen section's categories, four per row (hidden when a
+--              section has just one); none picked = the whole section.
+local SECTION_STYLE = "font-size:13px; font-weight:800; letter-spacing:2px;"
+local FILTERS, SECTION_BUTTONS, SECTION_GROUP, SECTION_CATS = {}, {}, {}, {}
+
+local function presentSections()
+    local seen, list = {}, {}
+    for _, cat in ipairs(CATEGORIES) do seen[sectionOf(cat)] = true end
+    for _, s in ipairs(SECTION_ORDER) do if seen[s] then list[#list + 1] = s; seen[s] = nil end end
+    for _, cat in ipairs(CATEGORIES) do
+        local s = sectionOf(cat)
+        if seen[s] then list[#list + 1] = s; seen[s] = nil end
     end
-    FILTERS[#FILTERS + 1] = { id = "FiltFav", cat = "FAV", label = "FAVS" }
-    local rows = { ID = "FilterRows", Weight = 0, Spacing = 6 }
-    for first = 1, #FILTERS, 4 do
-        local row = { Spacing = 6, Weight = 0, MinimumSize = { 0, 40 } }
-        for i = first, math.min(first + 3, #FILTERS) do
-            local f = FILTERS[i]
-            row[#row + 1] = ui:Button{ ID = f.id, Text = f.label, Checkable = true, Checked = (f.cat == "ALL") }
+    return list
+end
+
+local function categoryRows(cats)
+    local rows = {}
+    for first = 1, #cats, 4 do
+        local row = { Spacing = 6, Weight = 0, MinimumSize = { 0, 36 } }
+        for i = first, math.min(first + 3, #cats) do
+            row[#row + 1] = ui:Button{ ID = cats[i].id, Text = cats[i].label, Checkable = true }
         end
         rows[#rows + 1] = ui:HGroup(row)
     end
-    return ui:VGroup(rows)
+    return rows
+end
+
+local function filterRows()
+    FILTERS, SECTION_BUTTONS, SECTION_GROUP, SECTION_CATS = {}, {}, {}, {}
+    local sections = presentSections()
+    local buttons = { { id = "SecAll", sec = "ALL", label = "ALL" } }
+    for i, s in ipairs(sections) do buttons[#buttons + 1] = { id = "Sec" .. i, sec = s, label = s } end
+    buttons[#buttons + 1] = { id = "SecFav", sec = "FAV", label = "FAVS" }
+    local top = { ID = "SectionRow", Spacing = 6, Weight = 0, MinimumSize = { 0, 42 } }
+    for _, b in ipairs(buttons) do
+        SECTION_BUTTONS[#SECTION_BUTTONS + 1] = b
+        top[#top + 1] = ui:Button{ ID = b.id, Text = b.label, Checkable = true, Checked = (b.sec == "ALL"),
+                                   StyleSheet = SECTION_STYLE }
+    end
+    local groups = { ID = "FilterRows", Weight = 0, Spacing = 6 }
+    for si, s in ipairs(sections) do
+        local cats = {}
+        for i, cat in ipairs(CATEGORIES) do
+            if sectionOf(cat) == s then
+                local f = { id = "FiltCat" .. i, cat = cat, label = cat, sec = s }
+                cats[#cats + 1] = f; FILTERS[#FILTERS + 1] = f
+            end
+        end
+        SECTION_GROUP[s], SECTION_CATS[s] = "SecCats" .. si, #cats
+        local g = categoryRows(cats)
+        g.ID, g.Weight, g.Spacing, g.Hidden = "SecCats" .. si, 0, 6, true
+        groups[#groups + 1] = ui:VGroup(g)
+    end
+    return ui:VGroup{ Weight = 0, Spacing = 6, ui:HGroup(top), ui:VGroup(groups) }
 end
 
 -- Context handed to add-on modules: everything they may use, nothing more.
@@ -1078,13 +1281,13 @@ for _, mod in ipairs(MODULES) do
 end
 
 local tabRow = { Spacing = 6, Weight = 0, MinimumSize = { 0, 38 },
-    ui:Button{ ID = "TabFx", Text = "EFFECTS", Checkable = true, Checked = true, StyleSheet = TAB_STYLE } }
+    ui:Button{ ID = "TabFx", Text = "LIBRARY", Checkable = true, Checked = true, StyleSheet = TAB_STYLE } }
 for _, mod in ipairs(MODULES) do
     if not mod.failed then
         tabRow[#tabRow + 1] = ui:Button{ ID = mod.tabId, Text = (mod.title or mod.id):upper(), Checkable = true, StyleSheet = TAB_STYLE }
     end
 end
-tabRow[#tabRow + 1] = ui:Button{ ID = "TabStore", Text = "ADD-ONS & UPDATES", Checkable = true, StyleSheet = TAB_STYLE }
+tabRow[#tabRow + 1] = ui:Button{ ID = "TabStore", Text = "ADD-ONS && UPDATES", Checkable = true, StyleSheet = TAB_STYLE }
 
 local effectsSection = ui:VGroup{
     ID = "FxSection", Weight = 1, Spacing = 6,
@@ -1200,7 +1403,46 @@ local previewAnimation, previewAnimationFrame = nil, nil
 -- Tracked from the tree's own events: tree.CurrentItem hands back a function
 -- rather than the item, and UIManager swallows errors inside handlers.
 local selectedGroup = nil
-local activeCategory = "ALL"
+local activeSection, activeCategory = "ALL", nil
+
+-- The three apply buttons follow the selected effect (or, with nothing selected,
+-- the active section): Pre/Post effects and 1-framers keep PRE / BOTH / POST;
+-- titles and lyrics, overlays and clip FX get placements that suit them.
+local APPLY_SETS = {
+    prepost = { { "PRE", "PRE" }, { "BOTH", "BOTH" }, { "POST", "POST" } },
+    text    = { { "AT CLIP START", "START" }, { "AT PLAYHEAD", "PLAYHEAD" } },
+    overlay = { { "AT CLIP START", "START" }, { "ON CUT", "ONCUT" }, { "FULL CLIP", "FULL" } },
+    clip    = { { "DUPLICATE + APPLY", "DUPLICATE" }, { "APPLY TO CLIP", "DIRECT" } },
+}
+local APPLY_SLOTS = { "ApplyPre", "ApplyBoth", "ApplyPost" }
+local applyActions = { "PRE", "BOTH", "POST" }
+
+local function placementMode(group)
+    if group then
+        if group.pre or group.post then return "prepost" end
+        if group.only and group.only.clip then return "clip" end
+        local sec = sectionOf(group.type)
+        if sec == "TEXT" then return "text" end
+        if sec == "OVERLAYS" then return "overlay" end
+        return "prepost"
+    end
+    if activeSection == "TEXT" then return "text" end
+    if activeSection == "OVERLAYS" then return "overlay" end
+    if activeSection == "CLIP FX" then return "clip" end
+    return "prepost"
+end
+
+local function updateApplyButtons(group)
+    local set = APPLY_SETS[placementMode(group)]
+    for i, id in ipairs(APPLY_SLOTS) do
+        local a = set[i]
+        applyActions[i] = a and a[2] or nil
+        if itm[id] then
+            itm[id].Hidden = (a == nil)
+            if a then itm[id].Text = a[1] end
+        end
+    end
+end
 local previewHeight = 0
 local layoutPending = 0
 
@@ -1219,10 +1461,11 @@ local function fitPanels()
     layoutPending = 20
 end
 
-local function matches(group, query, filter)
+local function matches(group, query)
     if query ~= "" and not displayName(group.base):lower():find(query, 1, true) then return false end
-    if filter == "FAV" then return favourites[group.base] == true end
-    return filter == "ALL" or group.type == filter
+    if activeSection == "FAV" then return favourites[group.base] == true end
+    if activeSection ~= "ALL" and sectionOf(group.type) ~= activeSection then return false end
+    return activeCategory == nil or group.type == activeCategory
 end
 
 local function variantTag(group)
@@ -1239,7 +1482,7 @@ local function populate()
     local query = itm.Search.Text:lower()
     local shown, ready = 0, 0
     for _, group in ipairs(GROUPS) do
-        if matches(group, query, activeCategory) then
+        if matches(group, query) then
             local row = tree:NewItem()
             local star = favourites[group.base] and "*  " or ""
             local have = false
@@ -1329,26 +1572,29 @@ local function populateStore()
     local list = itm.StoreList
     list:Clear()
     storeRows = {}
-    local owned, available = 0, 0
-    for pass = 1, 2 do
+    local owned, available, soon = 0, 0, 0
+    -- available first, then coming soon, then what's installed
+    for pass = 1, 3 do
         for _, id in ipairs(STORE_ORDER) do
             local product = STORE[id]
             local have = ownsProduct(product)
-            if (pass == 1) == (not have) then
+            local group = have and 3 or (product.soon and 2 or 1)
+            if group == pass then
                 local row = list:NewItem()
                 row.Text[0] = product.name:upper()
-                row.Text[1] = have and "INSTALLED" or "GET IT  >"
+                row.Text[1] = have and "INSTALLED" or (product.soon and "COMING SOON" or "GET IT  >")
                 row.ToolTip[0] = product.desc or ""
                 row.SizeHint[0] = { 430, 48 }
                 list:AddTopLevelItem(row)
                 storeRows[row.Text[0]] = product
-                if have then owned = owned + 1 else available = available + 1 end
+                if have then owned = owned + 1 elseif product.soon then soon = soon + 1 else available = available + 1 end
             end
         end
     end
-    itm.StoreInfo.Text = available > 0
+    itm.StoreInfo.Text = (available > 0
         and (available .. " add-on" .. (available == 1 and "" or "s") .. " available. Select one to learn more.")
-        or  "You have everything currently available - check the store for new releases."
+        or  "You have everything currently available - check the store for new releases.")
+        .. (soon > 0 and (" " .. soon .. " more coming soon.") or "")
 end
 
 local function openUrl(url)
@@ -1398,17 +1644,41 @@ for _, mod in ipairs(MODULES) do
     end
 end
 
+-- A category button toggles: clicking the active one goes back to the whole section.
 local function setFilter(which)
     selectedGroup = nil
     showPreview(nil)
-    activeCategory = which
+    activeCategory = (activeCategory ~= which) and which or nil
     for _, f in ipairs(FILTERS) do
-        if itm[f.id] then itm[f.id].Checked = (f.cat == which) end
+        if itm[f.id] then itm[f.id].Checked = (f.cat == activeCategory) end
     end
     populate()
+    updateApplyButtons(nil)
+end
+
+local function setSection(which)
+    selectedGroup = nil
+    showPreview(nil)
+    activeSection, activeCategory = which, nil
+    for _, b in ipairs(SECTION_BUTTONS) do
+        if itm[b.id] then itm[b.id].Checked = (b.sec == which) end
+    end
+    for _, f in ipairs(FILTERS) do
+        if itm[f.id] then itm[f.id].Checked = false end
+    end
+    for sec, id in pairs(SECTION_GROUP) do
+        if itm[id] then itm[id].Hidden = not (sec == which and (SECTION_CATS[sec] or 0) > 1) end
+    end
+    populate()
+    updateApplyButtons(nil)
+    fitPanels()
 end
 
 local function wireFilters()
+    for _, b in ipairs(SECTION_BUTTONS) do
+        local sec = b.sec
+        win.On[b.id].Clicked = guard(function() setSection(sec) end)
+    end
     for _, f in ipairs(FILTERS) do
         local cat = f.cat
         win.On[f.id].Clicked = guard(function() setFilter(cat) end)
@@ -1440,6 +1710,7 @@ end
 local function selectRow(ev)
     selectedGroup = groupFromEvent(ev)
     showPreview(selectedGroup)
+    updateApplyButtons(selectedGroup)
 end
 win.On.List.CurrentItemChanged = guard(selectRow)
 win.On.List.ItemClicked        = guard(selectRow)
@@ -1449,18 +1720,19 @@ local function apply(which)
     itm.Status.Text = applyGroup(selectedGroup, which)
 end
 
--- Double-click lays down the full pair.
+-- Double-click lays down the full pair (other kinds: their first placement).
 win.On.List.ItemDoubleClicked = guard(function(ev)
     local group = groupFromEvent(ev)
     if group then
         selectedGroup = group
         showPreview(group)
-        itm.Status.Text = applyGroup(group, "BOTH")
+        updateApplyButtons(group)
+        itm.Status.Text = applyGroup(group, placementMode(group) == "prepost" and "BOTH" or applyActions[1])
     end
 end)
-win.On.ApplyPre.Clicked  = guard(function() apply("PRE")  end)
-win.On.ApplyPost.Clicked = guard(function() apply("POST") end)
-win.On.ApplyBoth.Clicked = guard(function() apply("BOTH") end)
+win.On.ApplyPre.Clicked  = guard(function() if applyActions[1] then apply(applyActions[1]) end end)
+win.On.ApplyBoth.Clicked = guard(function() if applyActions[2] then apply(applyActions[2]) end end)
+win.On.ApplyPost.Clicked = guard(function() if applyActions[3] then apply(applyActions[3]) end end)
 
 win.On.Fav.Clicked = guard(function()
     if not selectedGroup then itm.Status.Text = "pick an effect first" return end
@@ -1483,20 +1755,22 @@ local function selectProduct(ev)
     selectedProduct = product
     local have = ownsProduct(product)
     itm.StoreInfo.Text = "<b>" .. product.name .. "</b><br>" .. (product.desc or "")
-        .. (have and "<br><span style='color:#7A7A82;'>Installed</span>" or "")
-    itm.StoreGet.Text = have and "INSTALLED" or "GET IT"
+        .. (have and "<br><span style='color:#7A7A82;'>Installed</span>"
+            or (product.soon and "<br><span style='color:#7A7A82;'>Coming soon</span>" or ""))
+    itm.StoreGet.Text = have and "INSTALLED" or (product.soon and "COMING SOON" or "GET IT")
 end
 win.On.StoreList.ItemClicked = guard(selectProduct)
 win.On.StoreList.CurrentItemChanged = guard(selectProduct)
 win.On.StoreList.ItemDoubleClicked = guard(function(ev)
     local product = storeProductFromEvent(ev)
-    if product and not ownsProduct(product) and openUrl(product.url) then
+    if product and not ownsProduct(product) and not product.soon and openUrl(product.url) then
         itm.Status.Text = "opening the store in your browser..."
     end
 end)
 win.On.StoreGet.Clicked = guard(function()
     if not selectedProduct then itm.Status.Text = "select a product first" return end
     if ownsProduct(selectedProduct) then itm.Status.Text = selectedProduct.name .. " is already installed" return end
+    if selectedProduct.soon then itm.Status.Text = selectedProduct.name .. " is coming soon - stay tuned" return end
     if openUrl(selectedProduct.url) then itm.Status.Text = "opening the store in your browser..." end
 end)
 win.On.StoreVisit.Clicked = guard(function()
@@ -1566,30 +1840,49 @@ end)
 win.On.UpdateInstall.Clicked = guard(runUpdate)
 win.On.UpdateBarGo.Clicked = guard(runUpdate)
 
--- New categories from a newly installed pack get their filter buttons added.
+-- New categories from a newly installed pack get their buttons: into their
+-- section's category group, with a new section button when the section is new.
+local newFilterSerial = 0
 local function addNewFilterButtons()
     local have = {}
     for _, f in ipairs(FILTERS) do have[f.cat] = true end
-    local added = {}
+    local bySection, order = {}, {}
     for _, cat in ipairs(CATEGORIES) do
         if not have[cat] then
-            local id = "FiltNew" .. (#FILTERS + #added + 1)
-            added[#added + 1] = { id = id, cat = cat, label = cat }
+            local s = sectionOf(cat)
+            if not bySection[s] then bySection[s] = {}; order[#order + 1] = s end
+            newFilterSerial = newFilterSerial + 1
+            local f = { id = "FiltNew" .. newFilterSerial, cat = cat, label = cat, sec = s }
+            table.insert(bySection[s], f)
         end
     end
-    if #added == 0 then return end
-    for first = 1, #added, 4 do
-        local row = { Spacing = 6, Weight = 0, MinimumSize = { 0, 40 } }
-        for i = first, math.min(first + 3, #added) do
-            row[#row + 1] = ui:Button{ ID = added[i].id, Text = added[i].label, Checkable = true }
+    if #order == 0 then return end
+    local newButtons = {}
+    for _, s in ipairs(order) do
+        if not SECTION_GROUP[s] then
+            newFilterSerial = newFilterSerial + 1
+            local b = { id = "SecNew" .. newFilterSerial, sec = s, label = s }
+            itm.SectionRow:AddChild(ui:Button{ ID = b.id, Text = b.label, Checkable = true, StyleSheet = SECTION_STYLE })
+            table.insert(SECTION_BUTTONS, #SECTION_BUTTONS, b)   -- keep FAVS last
+            newButtons[#newButtons + 1] = b
+            SECTION_GROUP[s], SECTION_CATS[s] = "SecCatsNew" .. newFilterSerial, 0
+            itm.FilterRows:AddChild(ui:VGroup{ ID = SECTION_GROUP[s], Weight = 0, Spacing = 6, Hidden = true })
+            itm = win:GetItems()
         end
-        itm.FilterRows:AddChild(ui:HGroup(row))
+        for _, row in ipairs(categoryRows(bySection[s])) do itm[SECTION_GROUP[s]]:AddChild(row) end
+        SECTION_CATS[s] = SECTION_CATS[s] + #bySection[s]
+        for _, f in ipairs(bySection[s]) do FILTERS[#FILTERS + 1] = f end
     end
     itm = win:GetItems()
-    for _, f in ipairs(added) do
-        table.insert(FILTERS, #FILTERS, f)
-        local cat = f.cat
-        win.On[f.id].Clicked = guard(function() setFilter(cat) end)
+    for _, b in ipairs(newButtons) do
+        local sec = b.sec
+        win.On[b.id].Clicked = guard(function() setSection(sec) end)
+    end
+    for _, s in ipairs(order) do
+        for _, f in ipairs(bySection[s]) do
+            local cat = f.cat
+            win.On[f.id].Clicked = guard(function() setFilter(cat) end)
+        end
     end
 end
 
@@ -1725,7 +2018,8 @@ if selftestStart then
     local f = io.open(selftest, "r")
     if f then f:read("*l"); local spec = f:read("*l"); f:close()
         selftestSpec = spec or ""
-        local base, tlName = (spec or ""):match("^(.-)|(.+)$")
+        -- optional third field: an apply action (PRE/BOTH/POST/START/PLAYHEAD/ONCUT/FULL/DUPLICATE/DIRECT)
+        local base, tlName, action = (spec or ""):match("^(.-)|([^|]+)|?(.*)$")
         local _, proj = currentTimeline()
         if base and proj and tlName:match("^ZZ_") then
             for i = 1, proj:GetTimelineCount() do
@@ -1743,8 +2037,12 @@ if selftestStart then
             elseif group and clips[2] then
                 local c = clips[2]
                 local target = { { item = c, track = 1, s = math.floor(c:GetStart()), e = math.floor(c:GetEnd()) } }
-                for _, v in ipairs(variantsOf(group)) do
-                    selftestApply = selftestApply .. applyEffect(v, target) .. " || "
+                if action and action ~= "" then
+                    selftestApply = action .. ": " .. applyGroup(group, action, target)
+                else
+                    for _, v in ipairs(variantsOf(group)) do
+                        selftestApply = selftestApply .. applyEffect(v, target) .. " || "
+                    end
                 end
             else
                 selftestApply = "selftest: group or clips missing"
@@ -1782,7 +2080,8 @@ while not closed do
             local packs = {}
             for _, p in ipairs(PACKS) do packs[#packs + 1] = p.id end
             f:write("packs=" .. table.concat(packs, ",") .. "\neffects=" .. #CATALOGUE .. "\ngroups=" .. #GROUPS
-                .. "\ncategories=" .. table.concat(CATEGORIES, ",") .. "\nmodules=" .. table.concat(mods, ",")
+                .. "\ncategories=" .. table.concat(CATEGORIES, ",") .. "\nsections=" .. table.concat(presentSections(), ",")
+                .. "\nmodules=" .. table.concat(mods, ",")
                 .. "\nversion=" .. HUB_VERSION .. "\nupdate=" .. tostring(update.state)
                 .. (update.release and (" " .. update.release.version) or "") .. (update.error and (" " .. update.error) or "")
                 .. "\nupdateinfo=" .. tostring(itm.UpdateInfo.Text)

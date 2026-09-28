@@ -1,3 +1,7 @@
-version = 1.0
+version = 1.1
 file = hub.lua
-sha256 = b88184807385e7e85aac8668ed9ea68355462759d60a9378f88244f4c0761f39
+sha256 = f526d8fce0de10eca1cbe93e428316caed91ebca3f3c2941efea4ff0b082a457
+notes = Library tab with sections (Effects, Text, Clip FX, Overlays) and effects grouped by type
+notes = Placement buttons that fit each effect: titles at clip start or playhead, overlays at clip start, on the cut or full clip, clip FX on a duplicate or straight onto the clip
+notes = Clip FX duplicates now line up on footage whose frame rate differs from the timeline
+notes = Coming soon items in Add-ons
