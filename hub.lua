@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.4"
+local HUB_VERSION = "1.5"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -1487,14 +1487,14 @@ local storeSection = ui:VGroup{
 local logoAnimation = loadAnimation(LOGO_ANIM)
 local rootGroup = { ID = "root", Spacing = 6, Weight = 1,
     logoAnimation and ui:Button{
-        ID = "Logo", Flat = true, Weight = 0, MinimumSize = { 0, 84 }, MaximumSize = { 16777215, 84 },
-        IconSize = { 205, 80 }, Icon = logoAnimation.frames[1], Text = "",
+        ID = "Logo", Flat = true, Weight = 0, MinimumSize = { 0, 76 }, MaximumSize = { 16777215, 76 },
+        IconSize = { 179, 70 }, Icon = logoAnimation.frames[1], Text = "",
         StyleSheet = "border:none;background:transparent;",
     } or ui:Label{
         ID = "Logo", MinimumSize = { 0, 80 }, MaximumSize = { 16777215, 84 }, Weight = 0,
         Alignment = { AlignHCenter = true, AlignVCenter = true },
         Text = fileExists(LOGO)
-            and ("<center><img src='" .. urlPath(LOGO) .. "' width='205' height='80'></center>")
+            and ("<center><img src='" .. urlPath(LOGO) .. "' width='179' height='70'></center>")
             or  ("<center><span style='color:" .. RED ..
                  ";font-size:24px;font-weight:800;letter-spacing:6px;'>2WIN VFX HUB</span></center>"),
     },

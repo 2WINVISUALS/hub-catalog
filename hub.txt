@@ -1,5 +1,4 @@
-version = 1.4
+version = 1.5
 file = hub.lua
-sha256 = 83ef5f98bddec569d5412929a4f83c680b8d97860bf77de10638d58dd8a56803
-notes = New animated 2WIN logo header
-notes = With nothing selected, the placement buttons match what you have installed (titles-only installs get AT CLIP START / AT PLAYHEAD)
+sha256 = 5203500f0b68c20b03c027f5c65f94a1633faa0227136fb2dab38d88a450e4c2
+notes = Refined header logo
