@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.2"
+local HUB_VERSION = "1.3"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -53,7 +53,7 @@ local disp = bmd.UIDispatcher(ui)
 local LAUNCH_ARGS = { ... }
 local HUB_DIR = LAUNCH_ARGS[1]
 if type(HUB_DIR) ~= "string" then
-    -- run directly (not via the launcher): Core/hub.lua -> its parent folder
+    -- run directly (not via the launcher): Core/hub.core -> its parent folder
     local src = debug.getinfo(1, "S").source:gsub("^@", "")
     HUB_DIR = src:match("^(.*)[/\\][^/\\]-[/\\][^/\\]-$")
 end
@@ -124,6 +124,97 @@ do
     local o = readAll(HUB_DIR .. "/remote.txt")
     o = o and o:match("^%s*(%S+)")
     if o and (o:match("^https://") or o:match("^http://127%.0%.0%.1[:/]")) then REMOTE_BASE = o:gsub("/+$", "") end
+end
+
+-- The launcher this core expects: a copy of core/launcher.lua (the build checks they match).
+local LAUNCHER_SOURCE = [==[
+--[[
+    2WIN VFX Hub [2WINVISUALS]
+    Run from:  Workspace > Scripts > Utility > 2WIN VFX Hub
+
+    This small launcher starts the Hub from "2WIN VFX Hub/Core/hub.core" (not .lua,
+    so Resolve's Scripts menu doesn't list it). The Hub updates itself by replacing
+    that file (keeping the previous one as hub_prev.core). If a new version ever
+    fails to start, the launcher puts the previous version back and runs it, so an
+    update can never leave the Hub broken.
+]]
+
+local function scriptDir()
+    local src = debug.getinfo(1, "S").source:gsub("^@", "")
+    return src:match("^(.*)[/\\][^/\\]-$")
+end
+
+local ROOT = scriptDir() .. "/2WIN VFX Hub"
+local CORE = ROOT .. "/Core"
+
+local function readAll(p)
+    local f = io.open(p, "rb"); if not f then return nil end
+    local d = f:read("*a"); f:close(); return d
+end
+local function writeAll(p, d)
+    local f = io.open(p, "wb"); if not f then return false end
+    f:write(d); f:close(); return true
+end
+local function note(msg)
+    writeAll(ROOT .. "/last_launch.txt", os.date("%Y-%m-%d %H:%M:%S") .. "  " .. msg .. "\n")
+end
+
+local function run(path)
+    local chunk, err = loadfile(path)
+    if not chunk then return false, err end
+    return xpcall(function() return chunk(ROOT) end, function(e) return debug.traceback(tostring(e), 2) end)
+end
+
+-- A hub.lua is newer than hub.core: an older Hub version saved its update under that
+-- name. The Hub renames it to hub.core when it starts.
+local MAIN = readAll(CORE .. "/hub.lua") and (CORE .. "/hub.lua") or (CORE .. "/hub.core")
+local ok, err = run(MAIN)
+if ok then return end
+
+-- The current version failed. Fall back to the previous one, if there is one.
+local prev = readAll(CORE .. "/hub_prev.core")
+if prev then
+    local bad = readAll(MAIN)
+    if bad then writeAll(CORE .. "/hub_failed.core", bad) end
+    -- remember the failed version so the Hub doesn't offer it again
+    local badVer = readAll(CORE .. "/version.txt")
+    if badVer then writeAll(CORE .. "/skip_version.txt", badVer) end
+    writeAll(CORE .. "/hub.core", prev)
+    if MAIN ~= CORE .. "/hub.core" then os.remove(MAIN) end
+    local prevVer = readAll(CORE .. "/version_prev.txt")
+    if prevVer then writeAll(CORE .. "/version.txt", prevVer) end
+    writeAll(CORE .. "/rolled_back.txt", tostring(err))
+    note("Hub failed, rolled back to previous version: " .. tostring(err))
+    local ok2, err2 = run(CORE .. "/hub.core")
+    if not ok2 then note("previous version also failed: " .. tostring(err2)); print("2WIN VFX Hub could not start: " .. tostring(err2)) end
+else
+    note("Hub failed: " .. tostring(err))
+    print("2WIN VFX Hub could not start: " .. tostring(err))
+end
+]==]
+
+-- Installs from before the rename kept the core as Core/hub.lua (and hub_prev.lua after an
+-- update), which Resolve lists in its Scripts menu. When an old launcher starts this version
+-- from hub.lua, move the files to .core and bring the launcher up to date, so from the next
+-- start only "2WIN VFX Hub" is in the menu. Only for a launcher start of the installed Hub.
+if type(LAUNCH_ARGS[1]) == "string" then
+    pcall(function()
+        local norm = function(p) return (p:gsub("\\", "/"):lower()) end
+        local running = norm(debug.getinfo(1, "S").source:gsub("^@", ""))
+        local fromLua = running == norm(CORE_DIR .. "/hub.lua")
+        for _, name in ipairs({ "hub", "hub_prev", "hub_failed" }) do
+            local old, new = CORE_DIR .. "/" .. name .. ".lua", CORE_DIR .. "/" .. name .. ".core"
+            local d = readAll(old)
+            if d then
+                -- the running hub.lua is this (newest) version; otherwise never overwrite a .core
+                local keep = (name == "hub") and not fromLua or (name ~= "hub" and fileExists(new))
+                if keep or writeAll(new, d) then os.remove(old) end
+            end
+        end
+        local path = HUB_DIR .. ".lua"
+        local have = readAll(path)
+        if have and (have:gsub("\r\n", "\n")) ~= LAUNCHER_SOURCE then writeAll(path, LAUNCHER_SOURCE) end
+    end)
 end
 
 -- SHA-256 (LuaJIT bit ops), to verify downloaded updates.
@@ -262,22 +353,22 @@ local function checkForUpdates()
     return update
 end
 
--- Downloads, verifies, keeps the current version as hub_prev.lua, swaps in.
+-- Downloads, verifies, keeps the current version as hub_prev.core, swaps in.
 local function installUpdate()
     local rel = update.release
     if not rel then return false, "no update to install" end
-    local tmp = CORE_DIR .. "/.hub_download.lua"
+    local tmp = CORE_DIR .. "/.hub_download.tmp"
     if not download(REMOTE_BASE .. "/" .. rel.file, tmp) then return false, "download failed - check your connection" end
     local data = readAll(tmp)
     if not data or sha256(data) ~= rel.sha256:lower() then os.remove(tmp) return false, "download was corrupted - nothing was changed" end
     local chunk = loadfile(tmp)
     if not chunk then os.remove(tmp) return false, "update file is invalid - nothing was changed" end
-    local current = readAll(CORE_DIR .. "/hub.lua")
+    local current = readAll(CORE_DIR .. "/hub.core")
     if current then
-        writeAll(CORE_DIR .. "/hub_prev.lua", current)
+        writeAll(CORE_DIR .. "/hub_prev.core", current)
         writeAll(CORE_DIR .. "/version_prev.txt", HUB_VERSION)
     end
-    if not writeAll(CORE_DIR .. "/hub.lua", data) then os.remove(tmp) return false, "could not write the update" end
+    if not writeAll(CORE_DIR .. "/hub.core", data) then os.remove(tmp) return false, "could not write the update" end
     writeAll(CORE_DIR .. "/version.txt", rel.version)
     os.remove(tmp)
     update.state = "installed"
