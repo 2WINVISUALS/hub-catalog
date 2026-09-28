@@ -1,7 +1,9 @@
-version = 1.1
+version = 1.2
 file = hub.lua
-sha256 = f526d8fce0de10eca1cbe93e428316caed91ebca3f3c2941efea4ff0b082a457
-notes = Library tab with sections (Effects, Text, Clip FX, Overlays) and effects grouped by type
-notes = Placement buttons that fit each effect: titles at clip start or playhead, overlays at clip start, on the cut or full clip, clip FX on a duplicate or straight onto the clip
-notes = Clip FX duplicates now line up on footage whose frame rate differs from the timeline
-notes = Coming soon items in Add-ons
+sha256 = 535d940764f9d754434f5d559b36caf958bf3677fa5a200de98fa2309cf1cf7d
+notes = Effects you place now show their own name on the timeline
+notes = Updated packs refresh automatically in projects that already use them
+notes = Post effects fit short clips, but never shorter than 6 frames
+notes = Smoother effect previews on Mac
+notes = Effects with the same name in two packs show which pack they're from
+notes = Tidier Add-ons tab with updated product info

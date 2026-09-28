@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.1"
+local HUB_VERSION = "1.2"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -548,12 +548,27 @@ local function findFolder(folder, name)
     end
 end
 
+local function childFolder(folder, name)
+    for _, sub in ipairs(folder:GetSubFolderList()) do
+        if sub:GetName() == name then return sub end
+    end
+end
+
+-- A pack whose pack.txt carries "presets = <stamp>" is imported into its own
+-- sub-bin per stamp, so an updated presets.drb comes in fresh; older sub-bins stay
+-- put for clips already on timelines.
+local function stampFolderName(pack)
+    return (pack.presets and pack.presets ~= "") and ("Presets " .. pack.presets) or nil
+end
+
 -- Every clip under each pack's bin, by lower-cased name. Pack bins are indexed
--- first, in pack order, so they win over loose duplicates elsewhere.
+-- first, in pack order (the current stamp's sub-bin ahead of older ones), so they
+-- win over loose duplicates elsewhere.
 local presetIndex = {}
+local presetsStale = false
 
 local function refreshPresets()
-    presetIndex = {}
+    presetIndex, presetsStale = {}, false
     local _, proj = currentTimeline()
     if not proj then return presetIndex end
     local root = proj:GetMediaPool():GetRootFolder()
@@ -569,7 +584,11 @@ local function refreshPresets()
     end
     for _, pack in ipairs(PACKS) do
         local bin = findFolder(root, pack.bin)
+        local stamp = stampFolderName(pack)
+        local current = bin and stamp and childFolder(bin, stamp)
+        if current then collect(current, false) end
         if bin then collect(bin, false) end
+        if bin and stamp and not current then presetsStale = true end
     end
     collect(root, true)
     return presetIndex
@@ -587,13 +606,16 @@ local function importPacks(proj)
         end
         if #needed > 0 then
             local existing = findFolder(root, pack.bin)
+            local stamp = stampFolderName(pack)
+            local target = existing
+            if existing and stamp then target = childFolder(existing, stamp) end
             local have = {}
-            if existing then
+            if target then
                 local function walk(f)
                     for _, clip in ipairs(f:GetClipList()) do have[trim(clip:GetName()):lower()] = true end
                     for _, sub in ipairs(f:GetSubFolderList()) do walk(sub) end
                 end
-                walk(existing)
+                walk(target)
             end
             local complete = true
             for _, n in ipairs(needed) do if not have[n] then complete = false end end
@@ -602,6 +624,7 @@ local function importPacks(proj)
                     messages[#messages + 1] = pack.name .. ": presets file missing, reinstall the pack"
                 else
                     local dest = existing or mp:AddSubFolder(root, pack.bin)
+                    if dest and stamp then dest = target or mp:AddSubFolder(dest, stamp) end
                     if dest and mp:SetCurrentFolder(dest) and mp:ImportFolderFromFile(pack.drbPath) then
                         imported = true
                         messages[#messages + 1] = pack.name .. " ready"
@@ -670,6 +693,10 @@ end
 -- timeline length is measured on first use and remembered here.
 local trueLength = {}
 
+-- A Post on a short clip is trimmed to the clip, but never below this many
+-- frames: shakes, distortions etc. squeezed any shorter look rushed.
+local POST_MIN = 6
+
 local function place(mp, item, trackIndex, at, length, startFrame)
     local added = mp:AppendToTimeline({ {
         mediaPoolItem = item,
@@ -680,6 +707,12 @@ local function place(mp, item, trackIndex, at, length, startFrame)
         mediaType     = 1,
     } })
     return added and added[1]
+end
+
+-- A generator placed by script is named "Adjustment Clip" on the timeline; give
+-- it the preset's name (pcall: TimelineItem:SetName is missing in older Resolve).
+local function nameClip(item, name)
+    if item then pcall(function() item:SetName(name) end) end
 end
 
 -- The selected clip, plus the track it sits on.
@@ -949,8 +982,8 @@ local function applyEffect(effect, targetsOverride)
         if not preset then return "Failed: " .. effect.name .. " media is missing from its pack" end
     else
         preset = refreshPresets()[effect.name:lower()]
-        -- First use in a project: pull the packs in automatically.
-        if not preset then
+        -- First use in a project, or an updated pack: pull the packs in automatically.
+        if not preset or presetsStale then
             if importPacks(proj) then preset = refreshPresets()[effect.name:lower()] end
         end
         if not preset then
@@ -995,7 +1028,8 @@ local function applyEffect(effect, targetsOverride)
                 request = math.max(1, math.floor(span * request / expect + 0.5)); expect = span
             end
         elseif not mode then
-            if not isPre and expect > span then expect = span end
+            -- a Post fits its clip, but squeezed under POST_MIN frames it looks rushed
+            if not isPre and expect > span then expect = math.max(span, math.min(expect, POST_MIN)) end
             if trueLength[key] and expect < trueLength[key] then
                 request = math.max(1, math.floor(expect * request / trueLength[key] + 0.5))
             end
@@ -1030,7 +1064,17 @@ local function applyEffect(effect, targetsOverride)
                             else failed = "Resolve refused the corrected placement" end
                         end
                     end
-                    if item then placed = placed + 1; dropped = got end
+                    -- A Post (or FULL CLIP overlay) longer than the clip: on first use its
+                    -- real length wasn't known, so trim it to the clip like later uses are
+                    -- (a Post not below POST_MIN frames).
+                    local want = (mode == "FULL") and span or math.max(span, math.min(got, POST_MIN))
+                    if item and ((not mode and not isPre) or mode == "FULL") and got > want then
+                        tl:DeleteClips({ item }, false)
+                        item = place(mp, preset, dest, at, math.max(1, math.floor(want * request / got + 0.5)))
+                        if item then got = lengthOf(item)
+                        else failed = "Resolve refused the trimmed placement" end
+                    end
+                    if item then placed = placed + 1; dropped = got; nameClip(item, effect.name) end
                 end
             end
         end
@@ -1260,6 +1304,7 @@ local ctx = {
     groups = function() return GROUPS end,
     bases = function() return BASES end,
     displayName = displayName,
+    sectionOf = sectionOf,
     applyEffect = applyEffect,
     currentTimeline = currentTimeline,
     items = function() return itm end,
@@ -1321,8 +1366,8 @@ local effectsSection = ui:VGroup{
 local storeSection = ui:VGroup{
     ID = "StoreSection", Weight = 1, Spacing = 8, Hidden = true,
     ui:Label{ Weight = 0, Alignment = { AlignHCenter = true }, WordWrap = true,
-              Text = "<span style='color:#C9C9CF;font-size:13px;'>Expand the Hub with more packs and add-ons. "
-                  .. "Anything you install shows up here as INSTALLED and merges into the Effects tab automatically.</span>" },
+              Text = "<span style='color:#C9C9CF;font-size:13px;'>Expand the Hub with more packs and add-ons.<br>"
+                  .. "Anything you install shows up here as INSTALLED and in your LIBRARY.</span>" },
     ui:Tree{
         ID = "StoreList", Weight = 1, MinimumSize = { 0, 200 },
         RootIsDecorated = false, HeaderHidden = true, Indentation = 0, ColumnCount = 2,
@@ -1489,7 +1534,11 @@ local function populate()
             for _, v in ipairs(variantsOf(group)) do
                 if v.clip or v.kind == "media" or presetIndex[v.name:lower()] then have = true end
             end
-            row.Text[0] = star .. displayName(group.base):upper() .. variantTag(group)
+            -- Rows are looked up by their text, so two packs showing the same name
+            -- would pick each other: the later one carries its pack's name.
+            local text = star .. displayName(group.base):upper() .. variantTag(group)
+            if rowGroup[text] then text = text .. "   |   " .. group.pack.name:upper() end
+            row.Text[0] = text
             row.ToolTip[0] = (have and "Ready to place" or "Use RESCAN to restore this effect")
                              .. "  |  " .. group.pack.name
             if group.thumb then row.Icon[0] = ui:Icon({ File = group.thumb }) end
@@ -1546,6 +1595,18 @@ pcall(function()
         ffi.cdef[[unsigned long long __stdcall GetTickCount64(void);]]
         local kernel = ffi.load("kernel32")
         animationClock = function() return tonumber(kernel.GetTickCount64()) / 1000 end
+    else
+        -- macOS / Linux: os.clock is CPU time and barely moves while the Hub idles,
+        -- so previews would crawl; use the wall clock instead.
+        ffi.cdef[[ typedef struct { long sec; int usec; } hub_timeval;
+                   int gettimeofday(hub_timeval *tv, void *tz); ]]
+        local tv = ffi.new("hub_timeval")
+        if ffi.C.gettimeofday(tv, nil) == 0 then
+            animationClock = function()
+                ffi.C.gettimeofday(tv, nil)
+                return tonumber(tv.sec) + tonumber(tv.usec) / 1e6
+            end
+        end
     end
 end)
 local function advanceAnimations()
