@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.3"
+local HUB_VERSION = "1.4"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -63,6 +63,7 @@ local MODULE_DIR = HUB_DIR .. "/Modules"
 local STORE_FILE = HUB_DIR .. "/Store.txt"
 local FAV_FILE   = HUB_DIR .. "/Favourites.txt"
 local LOGO       = HUB_DIR .. "/UI/logo.png"
+local LOGO_ANIM  = HUB_DIR .. "/UI/logo_anim"   -- animated header (played once on open), if installed
 local ICON       = HUB_DIR .. "/UI/window_icon.ico"
 local STORE_HOME = "https://store.2winvisuals.com"
 
@@ -1483,12 +1484,17 @@ local storeSection = ui:VGroup{
     },
 }
 
+local logoAnimation = loadAnimation(LOGO_ANIM)
 local rootGroup = { ID = "root", Spacing = 6, Weight = 1,
-    ui:Label{
+    logoAnimation and ui:Button{
+        ID = "Logo", Flat = true, Weight = 0, MinimumSize = { 0, 84 }, MaximumSize = { 16777215, 84 },
+        IconSize = { 205, 80 }, Icon = logoAnimation.frames[1], Text = "",
+        StyleSheet = "border:none;background:transparent;",
+    } or ui:Label{
         ID = "Logo", MinimumSize = { 0, 80 }, MaximumSize = { 16777215, 84 }, Weight = 0,
         Alignment = { AlignHCenter = true, AlignVCenter = true },
         Text = fileExists(LOGO)
-            and ("<center><img src='" .. urlPath(LOGO) .. "' width='220' height='77'></center>")
+            and ("<center><img src='" .. urlPath(LOGO) .. "' width='205' height='80'></center>")
             or  ("<center><span style='color:" .. RED ..
                  ";font-size:24px;font-weight:800;letter-spacing:6px;'>2WIN VFX HUB</span></center>"),
     },
@@ -1565,7 +1571,15 @@ local function placementMode(group)
     if activeSection == "TEXT" then return "text" end
     if activeSection == "OVERLAYS" then return "overlay" end
     if activeSection == "CLIP FX" then return "clip" end
-    return "prepost"
+    -- ALL / FAVS: if everything installed places the same way (a titles-only
+    -- install, say), use that; a mixed library keeps PRE / BOTH / POST
+    local only
+    for _, g in ipairs(GROUPS) do
+        local m = placementMode(g)
+        if only and m ~= only then return "prepost" end
+        only = m
+    end
+    return only or "prepost"
 end
 
 local function updateApplyButtons(group)
@@ -1700,8 +1714,15 @@ pcall(function()
         end
     end
 end)
+local logoStart, logoFrame = nil, 1
 local function advanceAnimations()
     local now = animationClock()
+    -- the header logo builds in once, then holds its last frame
+    if logoAnimation and logoFrame < logoAnimation.count and itm.Logo then
+        logoStart = logoStart or now
+        local frame = math.min(logoAnimation.count, math.floor((now - logoStart) * logoAnimation.fps) + 1)
+        if frame ~= logoFrame then itm.Logo.Icon = logoAnimation.frames[frame]; logoFrame = frame end
+    end
     for _, entry in ipairs(animatedRows) do
         local a = entry.animation
         local frame = math.floor(now * a.fps) % a.count + 1
@@ -2054,6 +2075,7 @@ local function rescan()
     selectedGroup = nil
     showPreview(nil)
     populate()
+    updateApplyButtons(nil)
     if not itm.StoreSection.Hidden then populateStore() end
     itm.Status.Text = itm.Status.Text .. " | " .. message
 end
@@ -2079,6 +2101,7 @@ for _, mod in ipairs(MODULES) do
     if not mod.failed and mod.refresh then pcall(mod.refresh, ctx) end
 end
 populate()
+updateApplyButtons(nil)   -- now that the installed effects are known
 if startupMessage then itm.Status.Text = itm.Status.Text .. " | " .. startupMessage end
 
 -- Windows title-bar icon, scoped to this window only.

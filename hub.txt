@@ -1,5 +1,5 @@
-version = 1.3
+version = 1.4
 file = hub.lua
-sha256 = 103dc5d35158699a3bf42a2c8c6438e688d53face73799ea7782d1718d4da768
-notes = Workspace > Scripts now lists only 2WIN VFX Hub (the Hub's internal files are hidden)
-notes = Ready for MV Animated Titles: titles are placed above your clip at its start or at the playhead
+sha256 = 83ef5f98bddec569d5412929a4f83c680b8d97860bf77de10638d58dd8a56803
+notes = New animated 2WIN logo header
+notes = With nothing selected, the placement buttons match what you have installed (titles-only installs get AT CLIP START / AT PLAYHEAD)
