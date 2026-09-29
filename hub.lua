@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.7.2"
+local HUB_VERSION = "1.7.3"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -445,15 +445,21 @@ local function sectionRank(sec)
 end
 
 local function addStoreLine(line)
-    local id, name, desc, url, kind = line:match("^%s*([^|]-)%s*|%s*([^|]-)%s*|%s*([^|]-)%s*|%s*([^|]-)%s*|?%s*([^|]*)%s*$")
-    if not (id and safeName(id) and name ~= "" and safeUrl(url)) then return end
+    -- id | name | description | store URL | kind [| image URL | ...]. Columns past the ones this
+    -- version knows are ignored (not rejected), so the list can grow (product images, 1.7.3+)
+    -- without older Hubs dropping products.
+    local f = {}
+    for field in (line .. "|"):gmatch("(.-)|") do f[#f + 1] = trim(field) end
+    local id, name, desc, url, kind, image = f[1], f[2], f[3], f[4], f[5] or "", f[6]
+    if not (id and safeName(id) and name and name ~= "" and url and safeUrl(url)) then return end
     kind = (kind ~= nil and kind ~= "") and kind:lower() or "pack"
     -- "pack,soon" / "module,soon": listed as COMING SOON (older Hubs just see a product)
     local soon = kind:find("soon", 1, true) ~= nil
     kind = kind:gsub("[,%s]*soon", ""):gsub("^[,%s]+", "")
     if kind == "" then kind = "pack" end
     if not STORE[id] then STORE_ORDER[#STORE_ORDER + 1] = id end
-    STORE[id] = { id = id, name = name, desc = desc, url = url, kind = kind, soon = soon }
+    STORE[id] = { id = id, name = name, desc = desc or "", url = url, kind = kind, soon = soon,
+                  image = (image and image ~= "" and safeUrl(image)) and image or nil }
 end
 
 local function readPack(id)

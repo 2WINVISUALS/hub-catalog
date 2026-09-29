@@ -1,4 +1,4 @@
-version = 1.7.2
+version = 1.7.3
 file = hub.lua
-sha256 = 4fca7e1eb89a0b253ef52eef1013e19ddc4610aab1accb1d5df4c86af0c2b116
-notes = Fix: effect clips left highlighted no longer redirect a new effect; the clip under the playhead is used, and each shot is only targeted once
+sha256 = 1b3785e32b39d637ea99bf11db5157719d9db59e3ca73fd0e66e174cd5085d1b
+notes = Ready for product images in ADD-ONS (the product list can now carry more details without older Hubs dropping products)
