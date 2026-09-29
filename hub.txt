@@ -1,4 +1,4 @@
-version = 1.7.1
+version = 1.7.2
 file = hub.lua
-sha256 = a3a4955893d0c5e6dc0f4dcc480bd746342a5fa76fdfe4b84c0e93a95f792fca
-notes = Fix: effects from a pack not yet used in the project now place correctly
+sha256 = 4fca7e1eb89a0b253ef52eef1013e19ddc4610aab1accb1d5df4c86af0c2b116
+notes = Fix: effect clips left highlighted no longer redirect a new effect; the clip under the playhead is used, and each shot is only targeted once

@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.7.1"
+local HUB_VERSION = "1.7.2"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -887,21 +887,25 @@ end
 
 -- The selected clip, plus the track it sits on.
 local function findTarget(tl)
-    local picks = {}
-    -- ipairs, not pairs: Resolve's Lua lists carry an extra "__flags" key.
-    local sel = tl:GetSelectedClips()
-    if sel then for _, c in ipairs(sel) do picks[#picks + 1] = c end end
-    if #picks == 0 then
-        local cur = tl:GetCurrentVideoItem()
-        if cur then picks = { cur } end
-    end
-    if #picks == 0 then return nil, "Select a clip on the timeline first." end
-
     -- Footage resolves to a media pool item; an effect clip on the timeline
     -- never does, which makes this the dependable "is it our clip" test.
     local function isGenerator(item)
         return item ~= nil and item:GetMediaPoolItem() == nil
     end
+
+    -- Highlighted FOOTAGE is the target. Highlighted effect clips are ignored (they are
+    -- usually just left selected from before): with no footage highlighted, the clip
+    -- under the playhead is used. (1.7.2: they used to be mapped to the footage under
+    -- each one, so a highlighted Pre + Post pair placed the effect on two shots.)
+    local picks = {}
+    -- ipairs, not pairs: Resolve's Lua lists carry an extra "__flags" key.
+    local sel = tl:GetSelectedClips()
+    if sel then for _, c in ipairs(sel) do if not isGenerator(c) then picks[#picks + 1] = c end end end
+    if #picks == 0 then
+        local cur = tl:GetCurrentVideoItem()
+        if cur then picks = { cur } end
+    end
+    if #picks == 0 then return nil, "Select a clip on the timeline first." end
 
     -- A second apply would otherwise target the effect clip just placed.
     local base = {}
@@ -922,9 +926,11 @@ local function findTarget(tl)
         base[#base + 1] = clip
     end
 
-    local out = {}
+    local out, seen = {}, {}
     for _, clip in ipairs(base) do
         local id, nm = clip:GetUniqueId(), clip:GetName()
+        if seen[id] then goto nextclip end   -- each shot once, however it was picked
+        seen[id] = true
         local s, e = math.floor(clip:GetStart()), math.floor(clip:GetEnd())
         local track
         for tr = 1, tl:GetTrackCount("video") do
@@ -936,6 +942,7 @@ local function findTarget(tl)
             end
         end
         if track then out[#out + 1] = { item = clip, track = track, s = s, e = e } end
+        ::nextclip::
     end
     if #out == 0 then return nil, "Could not locate the selected clip's track." end
     return out
