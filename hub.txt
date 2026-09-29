@@ -1,5 +1,4 @@
-version = 1.7
+version = 1.7.1
 file = hub.lua
-sha256 = d995448b186c50ae459e4f84e76db240c13e2c03734d1d10bece76f60d129dc2
-notes = Tidier media pool: nothing is added until you use an effect, and everything goes in one '2WIN VFX Hub' bin (older bins are tidied into it)
-notes = More reliable start-up: a Resolve crash can no longer undo a Hub update
+sha256 = a3a4955893d0c5e6dc0f4dcc480bd746342a5fa76fdfe4b84c0e93a95f792fca
+notes = Fix: effects from a pack not yet used in the project now place correctly

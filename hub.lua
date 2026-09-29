@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.7"
+local HUB_VERSION = "1.7.1"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -726,7 +726,8 @@ end
 -- first, in pack order (the current stamp's sub-bin ahead of older ones), so they
 -- win over loose duplicates elsewhere.
 local presetIndex = {}
-local stalePacks = {}      -- packs whose bin is in the project but not their current presets
+local stalePacks = {}      -- pack ids whose bin is in the project but not their current presets
+                          -- (by id: RESCAN / startup re-read PACKS, effects keep older tables)
 
 local function refreshPresets()
     presetIndex, stalePacks = {}, {}
@@ -751,7 +752,7 @@ local function refreshPresets()
         for _, f in ipairs(folders) do current = current or (stamp and childFolder(f, stamp)) end
         if current then collect(current, false) end
         for _, f in ipairs(folders) do collect(f, false) end
-        if #folders > 0 and stamp and not current then stalePacks[pack] = true end
+        if #folders > 0 and stamp and not current then stalePacks[pack.id] = true end
     end
     collect(root, true)
     return presetIndex
@@ -765,7 +766,7 @@ local function importPacks(proj, only)
     local root, previous = mp:GetRootFolder(), mp:GetCurrentFolder()
     local messages, imported = {}, false
     for _, pack in ipairs(PACKS) do
-      if not only or pack == only then
+      if not only or pack.id == only.id then
         local needed = {}
         for _, e in ipairs(pack.effects) do
             if e.kind == "preset" then needed[#needed + 1] = e.name:lower() end
@@ -1152,7 +1153,7 @@ local function applyEffect(effect, targetsOverride)
     else
         preset = refreshPresets()[effect.name:lower()]
         -- First use in a project, or an updated pack: pull the packs in automatically.
-        if not preset or stalePacks[effect.pack] then
+        if not preset or (effect.pack and stalePacks[effect.pack.id]) then
             if importPacks(proj, effect.pack) then preset = refreshPresets()[effect.name:lower()] end
         end
         if not preset then
@@ -2432,6 +2433,9 @@ if selftestStart then
             end
             local tl = currentTimeline()
             local clips = tl and tl:GetItemListInTrack("video", 1) or {}
+            -- a real session re-reads the packs once the window is up (the startup loop);
+            -- do the same so the self-test exercises effects pointing at older pack tables
+            discoverPacks()
             local group
             for _, g in ipairs(GROUPS) do if g.base == base then group = g end end
             if base == "AUTO" then
