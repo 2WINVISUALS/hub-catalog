@@ -1,4 +1,5 @@
-version = 1.5
+version = 1.6
 file = hub.lua
-sha256 = 5203500f0b68c20b03c027f5c65f94a1633faa0227136fb2dab38d88a450e4c2
-notes = Refined header logo
+sha256 = f7ad7d40be5a5f4f2d61b8a5f458f76c53b563335873ee2c9fd895e21921ebf6
+notes = New CONTACT SUPPORT button in ADD-ONS: copies your setup for a quick support email
+notes = Lyric effects: new FIT TO CLIP placement (1 second default)

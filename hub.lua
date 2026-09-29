@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.5"
+local HUB_VERSION = "1.6"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -788,6 +788,8 @@ local trueLength = {}
 -- A Post on a short clip is trimmed to the clip, but never below this many
 -- frames: shakes, distortions etc. squeezed any shorter look rushed.
 local POST_MIN = 6
+-- FIT TO CLIP (lyrics) never makes a text animation shorter than this.
+local FIT_MIN = 12
 
 local function place(mp, item, trackIndex, at, length, startFrame)
     local added = mp:AppendToTimeline({ {
@@ -1119,6 +1121,11 @@ local function applyEffect(effect, targetsOverride)
             if expect > span then
                 request = math.max(1, math.floor(span * request / expect + 0.5)); expect = span
             end
+        elseif mode == "FIT" then
+            -- exactly the clip (the 2WIN text animations re-time to any length),
+            -- but never squeezed under FIT_MIN frames
+            local want = math.max(span, FIT_MIN)
+            request = math.max(1, math.floor(want * request / expect + 0.5)); expect = want
         elseif not mode then
             -- a Post fits its clip, but squeezed under POST_MIN frames it looks rushed
             if not isPre and expect > span then expect = math.max(span, math.min(expect, POST_MIN)) end
@@ -1159,8 +1166,11 @@ local function applyEffect(effect, targetsOverride)
                     -- A Post (or FULL CLIP overlay) longer than the clip: on first use its
                     -- real length wasn't known, so trim it to the clip like later uses are
                     -- (a Post not below POST_MIN frames).
-                    local want = (mode == "FULL") and span or math.max(span, math.min(got, POST_MIN))
-                    if item and ((not mode and not isPre) or mode == "FULL") and got > want then
+                    -- FIT TO CLIP likewise lands exactly on the clip (FIT_MIN at least).
+                    local want = (mode == "FULL") and span or (mode == "FIT") and math.max(span, FIT_MIN)
+                                 or math.max(span, math.min(got, POST_MIN))
+                    if item and (((not mode and not isPre) or mode == "FULL") and got > want
+                                 or mode == "FIT" and got ~= want) then
                         tl:DeleteClips({ item }, false)
                         item = place(mp, preset, dest, at, math.max(1, math.floor(want * request / got + 0.5)))
                         if item then got = lengthOf(item)
@@ -1197,7 +1207,8 @@ end
 -- Placement actions besides PRE / BOTH / POST (see placementMode):
 --   START PLAYHEAD ONCUT FULL  - titles, lyrics, overlays at their own length
 --   DUPLICATE DIRECT           - clip FX on a duplicate of the shot, or on the shot itself
-local PLACE_ACTIONS = { START = true, PLAYHEAD = true, ONCUT = true, FULL = true }
+--   FIT                        - lyrics: the head of the clip to its end, stretched or squeezed
+local PLACE_ACTIONS = { START = true, PLAYHEAD = true, ONCUT = true, FULL = true, FIT = true }
 
 -- "Both" is the two variants in sequence; each anchors itself.
 local function applyGroup(group, which, targetsOverride)
@@ -1482,6 +1493,18 @@ local storeSection = ui:VGroup{
         ui:Button{ ID = "UpdateCheck",   Text = "CHECK FOR UPDATES", MinimumSize = { 200, 40 } },
         ui:Button{ ID = "UpdateInstall", Text = "UPDATE", MinimumSize = { 200, 40 }, StyleSheet = APPLY_STYLE, Hidden = true },
     },
+    -- Support: an email with the customer's setup filled in
+    ui:HGroup{ Spacing = 8, Weight = 0, MinimumSize = { 0, 44 },
+        ui:Button{ ID = "SupportMail", Text = "CONTACT SUPPORT", MinimumSize = { 200, 40 } },
+    },
+    ui:Label{ ID = "SupportHelp", Weight = 0, WordWrap = true, Hidden = true,
+              Alignment = { AlignHCenter = true, AlignVCenter = true },
+              StyleSheet = "color:#C9C9CF;font-size:13px;", Text = "" },
+    ui:HGroup{ ID = "SupportRow", Spacing = 8, Weight = 0, MinimumSize = { 0, 44 }, Hidden = true,
+        ui:Button{ ID = "SupportApp",   Text = "OPEN EMAIL APP", MinimumSize = { 160, 40 } },
+        ui:Button{ ID = "SupportGmail", Text = "OPEN GMAIL", MinimumSize = { 160, 40 } },
+        ui:Button{ ID = "SupportCopy",  Text = "COPY AGAIN", MinimumSize = { 160, 40 } },
+    },
 }
 
 local logoAnimation = loadAnimation(LOGO_ANIM)
@@ -1550,9 +1573,11 @@ local activeSection, activeCategory = "ALL", nil
 -- The three apply buttons follow the selected effect (or, with nothing selected,
 -- the active section): Pre/Post effects and 1-framers keep PRE / BOTH / POST;
 -- titles and lyrics, overlays and clip FX get placements that suit them.
+local LYRIC_CATS = { ["LYRIC EFFECTS"] = true, LYRICS = true }
 local APPLY_SETS = {
     prepost = { { "PRE", "PRE" }, { "BOTH", "BOTH" }, { "POST", "POST" } },
     text    = { { "AT CLIP START", "START" }, { "AT PLAYHEAD", "PLAYHEAD" } },
+    lyric   = { { "AT CLIP START", "START" }, { "AT PLAYHEAD", "PLAYHEAD" }, { "FIT TO CLIP", "FIT" } },
     overlay = { { "AT CLIP START", "START" }, { "ON CUT", "ONCUT" }, { "FULL CLIP", "FULL" } },
     clip    = { { "DUPLICATE + APPLY", "DUPLICATE" }, { "APPLY TO CLIP", "DIRECT" } },
 }
@@ -1564,11 +1589,11 @@ local function placementMode(group)
         if group.pre or group.post then return "prepost" end
         if group.only and group.only.clip then return "clip" end
         local sec = sectionOf(group.type)
-        if sec == "TEXT" then return "text" end
+        if sec == "TEXT" then return LYRIC_CATS[group.type] and "lyric" or "text" end
         if sec == "OVERLAYS" then return "overlay" end
         return "prepost"
     end
-    if activeSection == "TEXT" then return "text" end
+    if activeSection == "TEXT" then return LYRIC_CATS[activeCategory] and "lyric" or "text" end
     if activeSection == "OVERLAYS" then return "overlay" end
     if activeSection == "CLIP FX" then return "clip" end
     -- ALL / FAVS: if everything installed places the same way (a titles-only
@@ -1784,11 +1809,110 @@ end
 -- Events
 --------------------------------------------------------------------
 
+--------------------------------------------------------------------
+-- Support email: the customer's setup and recent problems, ready to send
+--------------------------------------------------------------------
+
+local SUPPORT_EMAIL = "support@2winvisuals.com"
+local recentProblems = {}          -- last few errors / failed applies, newest last
+local function noteProblem(msg)
+    msg = tostring(msg or ""):gsub("%s+", " ")
+    if msg == "" then return end
+    recentProblems[#recentProblems + 1] = os.date("%H:%M ") .. msg:sub(1, 200)
+    if #recentProblems > 4 then table.remove(recentProblems, 1) end
+end
+
+local function supportInfo()
+    local lines = { "--- setup (added by the Hub) ---", "Hub: v" .. HUB_VERSION }
+    local okR, product = pcall(function() return resolve:GetProductName() .. " " .. resolve:GetVersionString() end)
+    lines[#lines + 1] = "Resolve: " .. (okR and product or "unknown")
+    local okF, ffi = pcall(require, "ffi")
+    local os_ = okF and (ffi.os .. " " .. ffi.arch) or (package.config:sub(1, 1) == "\\" and "Windows" or "Mac/Linux")
+    if okF and ffi.os == "OSX" then
+        local p = io.popen("sw_vers -productVersion 2>/dev/null")
+        if p then os_ = "macOS " .. (p:read("*l") or "") .. " " .. ffi.arch; p:close() end
+    end
+    lines[#lines + 1] = "System: " .. os_
+    local packs = {}
+    for _, p in ipairs(PACKS) do packs[#packs + 1] = p.name .. (p.version and (" " .. p.version) or "") end
+    lines[#lines + 1] = "Packs: " .. (#packs > 0 and table.concat(packs, ", ") or "none")
+    local mods = {}
+    for _, m in ipairs(MODULES) do mods[#mods + 1] = m.title or m.id end
+    lines[#lines + 1] = "Add-ons: " .. (#mods > 0 and table.concat(mods, ", ") or "none")
+    local okT, tl = pcall(function()
+        local p = resolve:GetProjectManager():GetCurrentProject(); local t = p and p:GetCurrentTimeline()
+        return t and (t:GetSetting("timelineFrameRate") .. " fps, " .. t:GetSetting("timelineResolutionWidth") .. "x"
+                      .. t:GetSetting("timelineResolutionHeight")) or "no timeline open"
+    end)
+    lines[#lines + 1] = "Timeline: " .. (okT and tl or "unknown")
+    lines[#lines + 1] = "Recent problems: " .. (#recentProblems > 0 and "" or "none")
+    for _, p in ipairs(recentProblems) do lines[#lines + 1] = "  " .. p end
+    return table.concat(lines, "\n")
+end
+
+local function copyToClipboard(text)
+    local okF, ffi = pcall(require, "ffi")
+    if okF and ffi.os == "Windows" then
+        return pcall(function()
+            pcall(ffi.cdef, [[
+                int __stdcall OpenClipboard(void*); int __stdcall EmptyClipboard(void); int __stdcall CloseClipboard(void);
+                void* __stdcall SetClipboardData(unsigned int, void*);
+                void* __stdcall GlobalAlloc(unsigned int, size_t); void* __stdcall GlobalLock(void*); int __stdcall GlobalUnlock(void*);
+            ]])
+            pcall(ffi.cdef, [[ int __stdcall MultiByteToWideChar(unsigned int, unsigned long, const char*, int, uint16_t*, int); ]])
+            local user, kernel = ffi.load("user32"), ffi.load("kernel32")
+            local text2 = text:gsub("\r?\n", "\r\n")
+            local n = kernel.MultiByteToWideChar(65001, 0, text2, -1, nil, 0)
+            local h = kernel.GlobalAlloc(2, n * 2)                -- GMEM_MOVEABLE
+            local p = ffi.cast("uint16_t*", kernel.GlobalLock(h))
+            kernel.MultiByteToWideChar(65001, 0, text2, -1, p, n)
+            kernel.GlobalUnlock(h)
+            assert(user.OpenClipboard(nil) ~= 0)
+            user.EmptyClipboard(); user.SetClipboardData(13, h); user.CloseClipboard()   -- CF_UNICODETEXT
+        end)
+    end
+    local p = io.popen("pbcopy", "w")
+    if p then p:write(text); p:close(); return true end
+    return false
+end
+
+-- Opens a mailto: or https: address with the system handler (no console window on Windows).
+local function launch(url)
+    local okF, ffi = pcall(require, "ffi")
+    if okF and ffi.os == "Windows" then
+        local ok = pcall(function()
+            pcall(ffi.cdef, [[ void* __stdcall ShellExecuteW(void*, const uint16_t*, const uint16_t*, const uint16_t*, const uint16_t*, int); ]])
+            pcall(ffi.cdef, [[ int __stdcall MultiByteToWideChar(unsigned int, unsigned long, const char*, int, uint16_t*, int); ]])
+            local kernel = ffi.load("kernel32")
+            local function wide(t)
+                local n = kernel.MultiByteToWideChar(65001, 0, t, -1, nil, 0)
+                local o = ffi.new("uint16_t[?]", n); kernel.MultiByteToWideChar(65001, 0, t, -1, o, n); return o
+            end
+            local r = ffi.load("shell32").ShellExecuteW(nil, wide("open"), wide(url), nil, nil, 1)
+            assert(tonumber(ffi.cast("intptr_t", r)) > 32, "nothing opened it")
+        end)
+        return ok
+    end
+    local r = os.execute("open '" .. url:gsub("'", "%%27") .. "'")
+    return r == 0 or r == true
+end
+local function mailEnc(s) return (s:gsub("\r?\n", "\r\n"):gsub("[^%w%-%._~]", function(c) return string.format("%%%02X", c:byte()) end)) end
+local SUPPORT_SUBJECT = "2WIN VFX Hub support"
+local SUPPORT_PROMPT = "Hi 2WINVISUALS, here's what happened (what you clicked, what you expected, what you saw):\n\n\n\n"
+local function openMail(body)
+    return launch("mailto:" .. SUPPORT_EMAIL .. "?subject=" .. mailEnc(SUPPORT_SUBJECT) .. "&body=" .. mailEnc(body))
+end
+local function openGmail(body)
+    return launch("https://mail.google.com/mail/?view=cm&fs=1&to=" .. mailEnc(SUPPORT_EMAIL)
+                  .. "&su=" .. mailEnc(SUPPORT_SUBJECT) .. "&body=" .. mailEnc(body))
+end
+ctx.noteProblem = noteProblem
+
 -- UIManager discards errors raised inside a handler; report them instead.
 local function guard(fn)
     return function(ev)
         local ok, err = pcall(fn, ev)
-        if not ok then itm.Status.Text = "error: " .. tostring(err) end
+        if not ok then itm.Status.Text = "error: " .. tostring(err); noteProblem(err) end
     end
 end
 ctx.guard = guard
@@ -1891,6 +2015,7 @@ win.On.List.ItemClicked        = guard(selectRow)
 local function apply(which)
     if not selectedGroup then itm.Status.Text = "pick an effect first" return end
     itm.Status.Text = applyGroup(selectedGroup, which)
+    if tostring(itm.Status.Text):lower():find("fail") then noteProblem(displayName(selectedGroup.base) .. ": " .. itm.Status.Text) end
 end
 
 -- Double-click lays down the full pair (other kinds: their first placement).
@@ -1901,6 +2026,7 @@ win.On.List.ItemDoubleClicked = guard(function(ev)
         showPreview(group)
         updateApplyButtons(group)
         itm.Status.Text = applyGroup(group, placementMode(group) == "prepost" and "BOTH" or applyActions[1])
+        if tostring(itm.Status.Text):lower():find("fail") then noteProblem(displayName(group.base) .. ": " .. itm.Status.Text) end
     end
 end)
 win.On.ApplyPre.Clicked  = guard(function() if applyActions[1] then apply(applyActions[1]) end end)
@@ -1996,7 +2122,7 @@ local function runUpdate()
     itm.UpdateInfo.Text = "Downloading v" .. esc(update.release.version) .. "..."
     disp:StepLoop(0.01)
     local ok, err = installUpdate()
-    if not ok then update.state = "failed"; update.error = err end
+    if not ok then update.state = "failed"; update.error = err; noteProblem("update failed: " .. tostring(err)) end
     showUpdateState()
     itm.Status.Text = ok and ("updated to v" .. update.release.version .. " - reopen the Hub") or ("update failed: " .. err)
 end
@@ -2011,6 +2137,27 @@ win.On.UpdateCheck.Clicked = guard(function()
     populateStore()
 end)
 win.On.UpdateInstall.Clicked = guard(runUpdate)
+local supportText = ""
+win.On.SupportMail.Clicked = guard(function()
+    supportText = SUPPORT_PROMPT .. supportInfo()
+    local copied = copyToClipboard(supportText)
+    itm.SupportHelp.Text = "<b>Email " .. SUPPORT_EMAIL .. "</b> from any email - Gmail, Proton, Outlook, iCloud...<br>"
+        .. (copied and "Your setup is <b>copied</b>: paste it into the message (Ctrl+V / Cmd+V) and describe what happened."
+                   or  "Describe what happened and include your Hub and Resolve versions.")
+    itm.SupportHelp.Hidden = false; itm.SupportRow.Hidden = false
+    itm.Status.Text = copied and "support info copied - paste it into an email to " .. SUPPORT_EMAIL or "email " .. SUPPORT_EMAIL
+    win:RecalcLayout()
+end)
+win.On.SupportApp.Clicked = guard(function()
+    itm.Status.Text = openMail(supportText) and "opening your email app..."
+        or "no email app is set up - paste the copied info into an email to " .. SUPPORT_EMAIL
+end)
+win.On.SupportGmail.Clicked = guard(function()
+    itm.Status.Text = openGmail(supportText) and "opening Gmail in your browser..." or "couldn't open the browser"
+end)
+win.On.SupportCopy.Clicked = guard(function()
+    itm.Status.Text = copyToClipboard(supportText) and "support info copied again" or "couldn't copy"
+end)
 win.On.UpdateBarGo.Clicked = guard(runUpdate)
 
 -- New categories from a newly installed pack get their buttons: into their
@@ -2242,6 +2389,11 @@ while not closed do
             checkForUpdates()
             showUpdateState()
             if selftestSpec == "UPDATE" then runUpdate() end
+            if selftestSpec == "SUPPORT" then
+                noteProblem("selftest: sample problem")
+                selftestApply = "clipboard=" .. tostring(copyToClipboard(supportInfo())) .. " | "
+                                .. supportInfo():gsub("\n", " | ")
+            end
         end)
     end
     processLayout()
