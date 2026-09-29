@@ -4,4 +4,3 @@ mv-essentials-1 | MV Essentials 1 | 19 transitions: flashes, glow flashes, blurs
 mv-essentials-2 | MV Essentials 2 | Flickers, bubble / chroma / ripple distortions, directional blur, spin, luma / grunge / dark glow dissolves. | https://store.2winvisuals.com | pack,soon
 mv-animated-titles | MV Animated Titles | Animated music video titles - real Fusion titles you place above a clip and edit in the Inspector. | https://store.2winvisuals.com | pack,soon
 auto-vfx | Auto VFX | Drop effects across every cut on your timeline in one click. | https://store.2winvisuals.com | module,soon
-random-edits | Random Edits | Chops a clip into random jump-cut edits with motion blur - applied to a duplicate, original untouched. | https://store.2winvisuals.com | pack
