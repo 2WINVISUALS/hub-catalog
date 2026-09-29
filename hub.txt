@@ -1,5 +1,5 @@
-version = 1.6
+version = 1.7
 file = hub.lua
-sha256 = f7ad7d40be5a5f4f2d61b8a5f458f76c53b563335873ee2c9fd895e21921ebf6
-notes = New CONTACT SUPPORT button in ADD-ONS: copies your setup for a quick support email
-notes = Lyric effects: new FIT TO CLIP placement (1 second default)
+sha256 = d995448b186c50ae459e4f84e76db240c13e2c03734d1d10bece76f60d129dc2
+notes = Tidier media pool: nothing is added until you use an effect, and everything goes in one '2WIN VFX Hub' bin (older bins are tidied into it)
+notes = More reliable start-up: a Resolve crash can no longer undo a Hub update

@@ -37,13 +37,19 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.6"
+local HUB_VERSION = "1.7"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
 local REMOTE_BASE = "https://raw.githubusercontent.com/2WINVISUALS/hub-catalog/main"
 
-local ui   = fu.UIManager
+local ui   = fu and fu.UIManager
+-- Resolve closing or crashing can leave no window system: stop quietly. Returning (not
+-- erroring) keeps the launcher from mistaking it for a broken update and rolling back.
+if not ui then
+    print("2WIN VFX Hub: Resolve's window system isn't ready - open the Hub again once Resolve has fully started")
+    do return end
+end
 local disp = bmd.UIDispatcher(ui)
 
 --------------------------------------------------------------------
@@ -148,6 +154,13 @@ end
 local ROOT = scriptDir() .. "/2WIN VFX Hub"
 local CORE = ROOT .. "/Core"
 
+-- While Resolve is starting up or shutting down there may be no window system. Nothing
+-- can run then, and it's not the Hub's fault: stop here instead of rolling back.
+if not (fu and fu.UIManager) then
+    print("2WIN VFX Hub: Resolve isn't ready - open the Hub again once Resolve has fully started")
+    return
+end
+
 local function readAll(p)
     local f = io.open(p, "rb"); if not f then return nil end
     local d = f:read("*a"); f:close(); return d
@@ -170,7 +183,18 @@ end
 -- name. The Hub renames it to hub.core when it starts.
 local MAIN = readAll(CORE .. "/hub.lua") and (CORE .. "/hub.lua") or (CORE .. "/hub.core")
 local ok, err = run(MAIN)
-if ok then return end
+if ok then os.remove(CORE .. "/failed_once.txt") return end
+
+-- One failure can just be Resolve closing or crashing under the Hub. Roll back only when
+-- the same version fails on two starts in a row (a broken update fails every time).
+local failedVer = readAll(CORE .. "/version.txt") or "?"
+if readAll(CORE .. "/failed_once.txt") ~= failedVer then
+    writeAll(CORE .. "/failed_once.txt", failedVer)
+    note("Hub failed once, will try again next time: " .. tostring(err))
+    print("2WIN VFX Hub could not start (" .. tostring(err) .. ") - please open it again")
+    return
+end
+os.remove(CORE .. "/failed_once.txt")
 
 -- The current version failed. Fall back to the previous one, if there is one.
 local prev = readAll(CORE .. "/hub_prev.core")
@@ -646,6 +670,51 @@ local function childFolder(folder, name)
     end
 end
 
+-- Everything the Hub adds to a project lives in ONE top-level bin, "2WIN VFX Hub",
+-- with a sub-bin per pack (named after the pack). Hubs before 1.7 made a top-level
+-- "2WIN VFX Hub - <pack>" bin per pack; tidyBins moves those inside (folders can't
+-- be renamed by script, so they keep their old names there).
+local Bins = { HUB = "2WIN VFX Hub", LEGACY = "2WIN VFX Hub - " }
+
+function Bins.hub(mp, create)
+    local root = mp:GetRootFolder()
+    local f = childFolder(root, Bins.HUB)
+    if not f and create then f = mp:AddSubFolder(root, Bins.HUB) end
+    return f
+end
+
+-- Every folder that may hold this pack's presets: its sub-bin in the Hub bin, a tidied
+-- legacy bin, or a legacy bin still loose in the media pool.
+function Bins.folders(mp, pack)
+    local out, hub = {}, Bins.hub(mp, false)
+    if hub then
+        out[#out + 1] = childFolder(hub, pack.name)
+        out[#out + 1] = pack.bin ~= pack.name and childFolder(hub, pack.bin) or nil
+    end
+    if #out == 0 then out[#out + 1] = findFolder(mp:GetRootFolder(), pack.bin) end
+    return out
+end
+
+function Bins.pack(mp, pack, create)
+    local f = Bins.folders(mp, pack)[1]
+    if not f and create then
+        local hub = Bins.hub(mp, true)
+        f = hub and mp:AddSubFolder(hub, pack.name)
+    end
+    return f
+end
+
+function Bins.tidy(proj)
+    local mp = proj:GetMediaPool()
+    local loose = {}
+    for _, sub in ipairs(mp:GetRootFolder():GetSubFolderList()) do
+        if sub:GetName():sub(1, #Bins.LEGACY) == Bins.LEGACY then loose[#loose + 1] = sub end
+    end
+    if #loose == 0 then return 0 end
+    local hub = Bins.hub(mp, true)
+    return (hub and mp:MoveFolders(loose, hub)) and #loose or 0
+end
+
 -- A pack whose pack.txt carries "presets = <stamp>" is imported into its own
 -- sub-bin per stamp, so an updated presets.drb comes in fresh; older sub-bins stay
 -- put for clips already on timelines.
@@ -657,10 +726,10 @@ end
 -- first, in pack order (the current stamp's sub-bin ahead of older ones), so they
 -- win over loose duplicates elsewhere.
 local presetIndex = {}
-local presetsStale = false
+local stalePacks = {}      -- packs whose bin is in the project but not their current presets
 
 local function refreshPresets()
-    presetIndex, presetsStale = {}, false
+    presetIndex, stalePacks = {}, {}
     local _, proj = currentTimeline()
     if not proj then return presetIndex end
     local root = proj:GetMediaPool():GetRootFolder()
@@ -674,30 +743,35 @@ local function refreshPresets()
         end
         for _, sub in ipairs(folder:GetSubFolderList()) do collect(sub, generatorsOnly) end
     end
+    local mp = proj:GetMediaPool()
     for _, pack in ipairs(PACKS) do
-        local bin = findFolder(root, pack.bin)
+        local folders = Bins.folders(mp, pack)
         local stamp = stampFolderName(pack)
-        local current = bin and stamp and childFolder(bin, stamp)
+        local current
+        for _, f in ipairs(folders) do current = current or (stamp and childFolder(f, stamp)) end
         if current then collect(current, false) end
-        if bin then collect(bin, false) end
-        if bin and stamp and not current then presetsStale = true end
+        for _, f in ipairs(folders) do collect(f, false) end
+        if #folders > 0 and stamp and not current then stalePacks[pack] = true end
     end
     collect(root, true)
     return presetIndex
 end
 
--- Imports each pack's bin once, into its own folder. Idempotent.
-local function importPacks(proj)
+-- Imports a pack's presets into its sub-bin of the Hub bin, only when they're missing or
+-- out of date. Called with the pack of the effect being placed (1.7+: nothing is imported
+-- just by opening the Hub). Idempotent.
+local function importPacks(proj, only)
     local mp = proj:GetMediaPool()
     local root, previous = mp:GetRootFolder(), mp:GetCurrentFolder()
     local messages, imported = {}, false
     for _, pack in ipairs(PACKS) do
+      if not only or pack == only then
         local needed = {}
         for _, e in ipairs(pack.effects) do
             if e.kind == "preset" then needed[#needed + 1] = e.name:lower() end
         end
         if #needed > 0 then
-            local existing = findFolder(root, pack.bin)
+            local existing = Bins.pack(mp, pack, false)
             local stamp = stampFolderName(pack)
             local target = existing
             if existing and stamp then target = childFolder(existing, stamp) end
@@ -715,7 +789,7 @@ local function importPacks(proj)
                 if not fileExists(pack.drbPath) then
                     messages[#messages + 1] = pack.name .. ": presets file missing, reinstall the pack"
                 else
-                    local dest = existing or mp:AddSubFolder(root, pack.bin)
+                    local dest = existing or Bins.pack(mp, pack, true)
                     if dest and stamp then dest = target or mp:AddSubFolder(dest, stamp) end
                     if dest and mp:SetCurrentFolder(dest) and mp:ImportFolderFromFile(pack.drbPath) then
                         imported = true
@@ -726,6 +800,7 @@ local function importPacks(proj)
                 end
             end
         end
+      end
     end
     if previous then mp:SetCurrentFolder(previous) end
     return imported, #messages > 0 and table.concat(messages, " | ") or "All packs ready"
@@ -1050,7 +1125,7 @@ local function mediaItem(effect, proj)
     if not effect.media or not fileExists(effect.media) then return nil end
     local mp = proj:GetMediaPool()
     local root, previous = mp:GetRootFolder(), mp:GetCurrentFolder()
-    local bin = findFolder(root, effect.pack.bin) or mp:AddSubFolder(root, effect.pack.bin)
+    local bin = Bins.pack(mp, effect.pack, true)
     local item
     if bin and mp:SetCurrentFolder(bin) then
         local added = mp:ImportMedia({ effect.media })
@@ -1077,11 +1152,11 @@ local function applyEffect(effect, targetsOverride)
     else
         preset = refreshPresets()[effect.name:lower()]
         -- First use in a project, or an updated pack: pull the packs in automatically.
-        if not preset or presetsStale then
-            if importPacks(proj) then preset = refreshPresets()[effect.name:lower()] end
+        if not preset or stalePacks[effect.pack] then
+            if importPacks(proj, effect.pack) then preset = refreshPresets()[effect.name:lower()] end
         end
         if not preset then
-            return "No preset named '" .. effect.name .. "' in this project. Use RESCAN."
+            return "Failed: no preset named '" .. effect.name .. "' - reinstall " .. (effect.pack and effect.pack.name or "the pack")
         end
     end
 
@@ -1662,14 +1737,15 @@ local function populate()
             local star = favourites[group.base] and "*  " or ""
             local have = false
             for _, v in ipairs(variantsOf(group)) do
-                if v.clip or v.kind == "media" or presetIndex[v.name:lower()] then have = true end
+                if v.clip or v.kind == "media" or presetIndex[v.name:lower()]
+                   or (v.pack and fileExists(v.pack.drbPath)) then have = true end
             end
             -- Rows are looked up by their text, so two packs showing the same name
             -- would pick each other: the later one carries its pack's name.
             local text = star .. displayName(group.base):upper() .. variantTag(group)
             if rowGroup[text] then text = text .. "   |   " .. group.pack.name:upper() end
             row.Text[0] = text
-            row.ToolTip[0] = (have and "Ready to place" or "Use RESCAN to restore this effect")
+            row.ToolTip[0] = (have and "Ready to place" or "Preset file missing - reinstall this pack")
                              .. "  |  " .. group.pack.name
             if group.thumb then row.Icon[0] = ui:Icon({ File = group.thumb }) end
             row.SizeHint[0] = { 640, 116 }
@@ -2213,7 +2289,10 @@ local function rescan()
     addNewFilterButtons()
     local _, proj = currentTimeline()
     local message = "No project open"
-    if proj then local _; _, message = importPacks(proj) end
+    if proj then
+        local moved = Bins.tidy(proj)
+        message = moved > 0 and ("tidied " .. moved .. " old bin" .. (moved == 1 and "" or "s") .. " into '" .. Bins.HUB .. "'") or "ready"
+    end
     refreshPresets()
     buildGroups()
     for _, mod in ipairs(MODULES) do
@@ -2241,7 +2320,10 @@ end
 math.randomseed(os.time())
 local _, startupProject = currentTimeline()
 local startupMessage
-if startupProject then local _; _, startupMessage = importPacks(startupProject) end
+if startupProject then
+    local moved = Bins.tidy(startupProject)
+    if moved > 0 then startupMessage = "tidied " .. moved .. " old bin" .. (moved == 1 and "" or "s") .. " into '" .. Bins.HUB .. "'" end
+end
 refreshPresets()
 buildGroups()
 for _, mod in ipairs(MODULES) do
