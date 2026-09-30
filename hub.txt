@@ -1,4 +1,4 @@
-version = 1.7.3
+version = 1.7.4
 file = hub.lua
-sha256 = 1b3785e32b39d637ea99bf11db5157719d9db59e3ca73fd0e66e174cd5085d1b
-notes = Ready for product images in ADD-ONS (the product list can now carry more details without older Hubs dropping products)
+sha256 = 6926fc67380445804c10847bbaa7196dc23ae3fe7e0652e6d19e5aae52fb3c5f
+notes = Renamed to VFX HUB [2WINVISUALS]: find it under Workspace > Scripts > VFX HUB [2WINVISUALS]
