@@ -1,5 +1,5 @@
 --[[
-    VFX HUB [2WINVISUALS]
+    2WIN VFX Hub [2WINVISUALS]
     ---------------------------------------------------------------
     One effect browser for every 2WINVISUALS pack. The Hub itself knows no
     effects: it discovers installed packs and optional add-on modules at
@@ -32,12 +32,12 @@
     and applies Packs/<id>/ClipFX/<name>.setting), media (imports the file
     and lays it on the track above).
 
-    Run from:  Workspace > Scripts > Utility > VFX HUB [2WINVISUALS]
+    Run from:  Workspace > Scripts > Utility > 2WIN VFX Hub
     (that script is a small launcher; this file is 2WIN VFX Hub/Core/hub.lua)
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.7.4"
+local HUB_VERSION = "1.7.3"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -47,7 +47,7 @@ local ui   = fu and fu.UIManager
 -- Resolve closing or crashing can leave no window system: stop quietly. Returning (not
 -- erroring) keeps the launcher from mistaking it for a broken update and rolling back.
 if not ui then
-    print("VFX HUB: Resolve's window system isn't ready - open the Hub again once Resolve has fully started")
+    print("2WIN VFX Hub: Resolve's window system isn't ready - open the Hub again once Resolve has fully started")
     do return end
 end
 local disp = bmd.UIDispatcher(ui)
@@ -133,13 +133,11 @@ do
     if o and (o:match("^https://") or o:match("^http://127%.0%.0%.1[:/]")) then REMOTE_BASE = o:gsub("/+$", "") end
 end
 
--- The launcher's file name in Scripts/Utility (its data folder stays "2WIN VFX Hub").
-local LAUNCHER_NAME = "VFX HUB [2WINVISUALS].lua"
 -- The launcher this core expects: a copy of core/launcher.lua (the build checks they match).
 local LAUNCHER_SOURCE = [==[
 --[[
-    VFX HUB [2WINVISUALS]
-    Run from:  Workspace > Scripts > Utility > VFX HUB [2WINVISUALS]
+    2WIN VFX Hub [2WINVISUALS]
+    Run from:  Workspace > Scripts > Utility > 2WIN VFX Hub
 
     This small launcher starts the Hub from "2WIN VFX Hub/Core/hub.core" (not .lua,
     so Resolve's Scripts menu doesn't list it). The Hub updates itself by replacing
@@ -159,7 +157,7 @@ local CORE = ROOT .. "/Core"
 -- While Resolve is starting up or shutting down there may be no window system. Nothing
 -- can run then, and it's not the Hub's fault: stop here instead of rolling back.
 if not (fu and fu.UIManager) then
-    print("VFX HUB: Resolve isn't ready - open the Hub again once Resolve has fully started")
+    print("2WIN VFX Hub: Resolve isn't ready - open the Hub again once Resolve has fully started")
     return
 end
 
@@ -193,7 +191,7 @@ local failedVer = readAll(CORE .. "/version.txt") or "?"
 if readAll(CORE .. "/failed_once.txt") ~= failedVer then
     writeAll(CORE .. "/failed_once.txt", failedVer)
     note("Hub failed once, will try again next time: " .. tostring(err))
-    print("VFX HUB could not start (" .. tostring(err) .. ") - please open it again")
+    print("2WIN VFX Hub could not start (" .. tostring(err) .. ") - please open it again")
     return
 end
 os.remove(CORE .. "/failed_once.txt")
@@ -213,18 +211,17 @@ if prev then
     writeAll(CORE .. "/rolled_back.txt", tostring(err))
     note("Hub failed, rolled back to previous version: " .. tostring(err))
     local ok2, err2 = run(CORE .. "/hub.core")
-    if not ok2 then note("previous version also failed: " .. tostring(err2)); print("VFX HUB could not start: " .. tostring(err2)) end
+    if not ok2 then note("previous version also failed: " .. tostring(err2)); print("2WIN VFX Hub could not start: " .. tostring(err2)) end
 else
     note("Hub failed: " .. tostring(err))
-    print("VFX HUB could not start: " .. tostring(err))
+    print("2WIN VFX Hub could not start: " .. tostring(err))
 end
 ]==]
 
 -- Installs from before the rename kept the core as Core/hub.lua (and hub_prev.lua after an
 -- update), which Resolve lists in its Scripts menu. When an old launcher starts this version
 -- from hub.lua, move the files to .core and bring the launcher up to date, so from the next
--- start only "VFX HUB [2WINVISUALS]" is in the menu. Only for a launcher start of the installed Hub.
--- The launcher was renamed from "2WIN VFX Hub.lua" (2026-09-29): write the new name, drop the old.
+-- start only "2WIN VFX Hub" is in the menu. Only for a launcher start of the installed Hub.
 if type(LAUNCH_ARGS[1]) == "string" then
     pcall(function()
         local norm = function(p) return (p:gsub("\\", "/"):lower()) end
@@ -239,13 +236,9 @@ if type(LAUNCH_ARGS[1]) == "string" then
                 if keep or writeAll(new, d) then os.remove(old) end
             end
         end
-        local path = HUB_DIR:gsub("[/\\][^/\\]*$", "") .. "/" .. LAUNCHER_NAME
-        local old = HUB_DIR .. ".lua"
+        local path = HUB_DIR .. ".lua"
         local have = readAll(path)
-        if (have or readAll(old)) and (not have or (have:gsub("\r\n", "\n")) ~= LAUNCHER_SOURCE) then
-            have = writeAll(path, LAUNCHER_SOURCE)
-        end
-        if have and readAll(old) then os.remove(old) end
+        if have and (have:gsub("\r\n", "\n")) ~= LAUNCHER_SOURCE then writeAll(path, LAUNCHER_SOURCE) end
     end)
 end
 
@@ -1584,7 +1577,7 @@ local storeSection = ui:VGroup{
     ui:Label{ ID = "UpdateInfo", Weight = 0, MinimumSize = { 0, 44 }, WordWrap = true,
               Alignment = { AlignHCenter = true, AlignVCenter = true },
               StyleSheet = "color:#C9C9CF;font-size:13px;border-top:1px solid " .. RED_DIM .. ";padding-top:8px;",
-              Text = "VFX HUB v" .. HUB_VERSION },
+              Text = "2WIN VFX Hub v" .. HUB_VERSION },
     ui:HGroup{ Spacing = 8, Weight = 0, MinimumSize = { 0, 44 },
         ui:Button{ ID = "UpdateCheck",   Text = "CHECK FOR UPDATES", MinimumSize = { 200, 40 } },
         ui:Button{ ID = "UpdateInstall", Text = "UPDATE", MinimumSize = { 200, 40 }, StyleSheet = APPLY_STYLE, Hidden = true },
@@ -1615,7 +1608,7 @@ local rootGroup = { ID = "root", Spacing = 6, Weight = 1,
         Text = fileExists(LOGO)
             and ("<center><img src='" .. urlPath(LOGO) .. "' width='179' height='70'></center>")
             or  ("<center><span style='color:" .. RED ..
-                 ";font-size:24px;font-weight:800;letter-spacing:6px;'>VFX HUB</span></center>"),
+                 ";font-size:24px;font-weight:800;letter-spacing:6px;'>2WIN VFX HUB</span></center>"),
     },
     -- shown only when a newer Hub is available
     ui:HGroup{ ID = "UpdateBar", Weight = 0, Spacing = 8, Hidden = true, MinimumSize = { 0, 36 },
@@ -1636,13 +1629,13 @@ rootGroup[#rootGroup + 1] = ui:Label{
     ID = "Footer", Weight = 0, MinimumSize = { 0, 18 }, MaximumSize = { 16777215, 22 },
     Alignment = { AlignHCenter = true },
     Text = "<center><span style='color:" .. RED ..
-           ";font-weight:700;letter-spacing:3px;font-size:11px;'>VFX HUB v" .. HUB_VERSION .. "</span>" ..
+           ";font-weight:700;letter-spacing:3px;font-size:11px;'>2WIN VFX HUB v" .. HUB_VERSION .. "</span>" ..
            "<span style='color:#4A4A52;font-size:11px;'>&nbsp;&nbsp;|&nbsp;&nbsp;BY 2WINVISUALS</span></center>",
 }
 
 win = disp:AddWindow({
     ID = "Hub",
-    WindowTitle = "VFX HUB [2WINVISUALS]",
+    WindowTitle = "2WIN VFX Hub [2WINVISUALS]",
     Geometry = { 200, 60, 700, 960 },
     MinimumSize = { 700, 760 },
     StyleSheet = STYLE,
@@ -1994,7 +1987,7 @@ local function launch(url)
     return r == 0 or r == true
 end
 local function mailEnc(s) return (s:gsub("\r?\n", "\r\n"):gsub("[^%w%-%._~]", function(c) return string.format("%%%02X", c:byte()) end)) end
-local SUPPORT_SUBJECT = "VFX HUB [2WINVISUALS] support"
+local SUPPORT_SUBJECT = "2WIN VFX Hub support"
 local SUPPORT_PROMPT = "Hi 2WINVISUALS, here's what happened (what you clicked, what you expected, what you saw):\n\n\n\n"
 local function openMail(body)
     return launch("mailto:" .. SUPPORT_EMAIL .. "?subject=" .. mailEnc(SUPPORT_SUBJECT) .. "&body=" .. mailEnc(body))
@@ -2199,7 +2192,7 @@ local function showUpdateState()
     elseif u.state == "failed" then
         text = "Update failed: " .. esc(u.error) .. "  (still on v" .. HUB_VERSION .. ")"
     else
-        text = "VFX HUB v" .. HUB_VERSION
+        text = "2WIN VFX Hub v" .. HUB_VERSION
     end
     itm.UpdateInfo.Text = text
     itm.UpdateInstall.Hidden = (u.state ~= "available")
