@@ -1,4 +1,4 @@
-version = 1.7.3
+version = 1.7.5
 file = hub.lua
-sha256 = 1b3785e32b39d637ea99bf11db5157719d9db59e3ca73fd0e66e174cd5085d1b
-notes = Ready for product images in ADD-ONS (the product list can now carry more details without older Hubs dropping products)
+sha256 = 9bfc343967e8a3ea118dfbc1387d8516ffaa38fcd78077ae12be677bb1598246
+notes = The Hub is now under Workspace > Scripts > VFX HUB

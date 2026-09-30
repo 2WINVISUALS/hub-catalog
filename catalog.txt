@@ -1,4 +1,4 @@
-# Products shown in the 2WIN VFX Hub ADD-ONS tab.
+# Products shown in the VFX HUB [2WINVISUALS] ADD-ONS tab.
 # id | name | description | store URL | pack or module
 mv-essentials-1 | MV Essentials 1 | 19 transitions: flashes, glow flashes, blurs, shakes, zooms and slides. | https://store.2winvisuals.com | pack
 mv-essentials-2 | MV Essentials 2 | Flickers, bubble / chroma / ripple distortions, directional blur, spin, luma / grunge / dark glow dissolves. | https://store.2winvisuals.com | pack,soon
