@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.7.6"
+local HUB_VERSION = "1.7.7"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -901,6 +901,20 @@ local function nameClip(item, name)
     if item then pcall(function() item:SetName(name) end) end
 end
 
+-- The playhead as a timeline frame number (the same numbering as GetStart).
+local function playheadFrame(tl)
+    local tc = tl:GetCurrentTimecode() or ""
+    local h, m, s, f = tc:match("^(%d+)[:;](%d+)[:;](%d+)[:;.](%d+)$")
+    if not h then return nil end
+    local base = math.floor((tonumber(tl:GetSetting("timelineFrameRate")) or 24) + 0.5)
+    local minutes = tonumber(h) * 60 + tonumber(m)
+    local frames = (minutes * 60 + tonumber(s)) * base + tonumber(f)
+    if tc:find(";") then   -- drop-frame timecode skips frame numbers every minute but each tenth
+        frames = frames - math.floor(base / 15) * (minutes - math.floor(minutes / 10))
+    end
+    return frames
+end
+
 -- The selected clip, plus the track it sits on.
 local function findTarget(tl)
     -- Footage resolves to a media pool item; an effect clip on the timeline
@@ -918,7 +932,18 @@ local function findTarget(tl)
     local sel = tl:GetSelectedClips()
     if sel then for _, c in ipairs(sel) do if not isGenerator(c) then picks[#picks + 1] = c end end end
     if #picks == 0 then
-        local cur = tl:GetCurrentVideoItem()
+        -- Not GetCurrentVideoItem: after a cut or playhead move it keeps naming the previous
+        -- clip for ~0.7 s. The timecode and the track lists are current, so use those.
+        local frame, cur = playheadFrame(tl), nil
+        if frame then
+            for tr = 1, tl:GetTrackCount("video") do
+                for _, item in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+                    if item:GetStart() <= frame and frame < item:GetEnd() then cur = item end
+                end
+            end
+        else
+            cur = tl:GetCurrentVideoItem()
+        end
         if cur then picks = { cur } end
     end
     if #picks == 0 then return nil, "Select a clip on the timeline first." end
@@ -1370,20 +1395,6 @@ local function applyEffect(effect, targetsOverride)
                 .. placed .. " clip" .. (placed == 1 and "" or "s")
     if failed then msg = msg .. "  (" .. (#targets - placed) .. " failed)" end
     return msg
-end
-
--- The playhead as a timeline frame number (the same numbering as GetStart).
-local function playheadFrame(tl)
-    local tc = tl:GetCurrentTimecode() or ""
-    local h, m, s, f = tc:match("^(%d+)[:;](%d+)[:;](%d+)[:;.](%d+)$")
-    if not h then return nil end
-    local base = math.floor((tonumber(tl:GetSetting("timelineFrameRate")) or 24) + 0.5)
-    local minutes = tonumber(h) * 60 + tonumber(m)
-    local frames = (minutes * 60 + tonumber(s)) * base + tonumber(f)
-    if tc:find(";") then   -- drop-frame timecode skips frame numbers every minute but each tenth
-        frames = frames - math.floor(base / 15) * (minutes - math.floor(minutes / 10))
-    end
-    return frames
 end
 
 -- Placement actions besides PRE / BOTH / POST (see placementMode):
@@ -2600,6 +2611,8 @@ if selftestStart then
                 local target = { { item = c, track = 1, s = math.floor(c:GetStart()), e = math.floor(c:GetEnd()) } }
                 local U = { want = action and action:match("%+UNDO$") }
                 if U.want then action = action:gsub("%+UNDO$", "") end
+                U.ph = action and action:find("@PH", 1, true)
+                if U.ph then action = action:gsub("@PH", "") end
                 function U.census()
                     local n = 0
                     for tr = 1, tl:GetTrackCount("video") do
@@ -2611,7 +2624,7 @@ if selftestStart then
                 end
                 U.c0 = U.census()
                 if action and action ~= "" then
-                    selftestApply = action .. ": " .. applyGroup(group, action, target)
+                    selftestApply = action .. ": " .. applyGroup(group, action, (not U.ph) and target or nil)
                     if U.want then
                         U.c1 = U.census()
                         U.msg = Bins.J.undo(tl)
