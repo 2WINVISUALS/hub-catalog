@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.7.5"
+local HUB_VERSION = "1.7.6"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -1004,6 +1004,82 @@ local function angleSource(tl, proj, shot, track)
     return media, left, err
 end
 
+--------------------------------------------------------------------
+-- UNDO journal: what the last placement created, so one button can take it back.
+-- Entries: { label, clips = {UniqueId...}, comps = {{id=UniqueId, name=compName}...} }
+-- Only things the Hub itself created are ever removed; the customer's own clips are never touched.
+--------------------------------------------------------------------
+Bins.J = { current = nil, last = nil, stack = {} }
+function Bins.J.begin(label)
+    Bins.J.current = { label = label, clips = {}, comps = {} }
+end
+function Bins.J.finish()
+    local e = Bins.J.current
+    Bins.J.current = nil
+    if e and (#e.clips > 0 or #e.comps > 0) then
+        Bins.J.stack[#Bins.J.stack + 1] = e
+        if #Bins.J.stack > 20 then table.remove(Bins.J.stack, 1) end
+    end
+end
+function Bins.J.entry(label)
+    if not Bins.J.current then Bins.J.begin(label) end
+    return Bins.J.current
+end
+function Bins.J.addClip(item, label)
+    local ok, id = pcall(function() return item:GetUniqueId() end)
+    if ok and id then local e = Bins.J.entry(label); e.clips[#e.clips + 1] = id end
+end
+function Bins.J.addComp(item, name, label)
+    local ok, id = pcall(function() return item:GetUniqueId() end)
+    if ok and id then local e = Bins.J.entry(label); e.comps[#e.comps + 1] = { id = id, name = name } end
+end
+function Bins.J.count() return #Bins.J.stack end
+
+-- Removes the newest journal entry. Returns a status line.
+function Bins.J.undo(tl)
+    local e = Bins.J.stack[#Bins.J.stack]
+    if not e then return "nothing to undo" end
+    if not tl then return "No timeline is open." end
+    local byId = {}
+    for tr = 1, tl:GetTrackCount("video") do
+        for _, item in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+            local ok, id = pcall(function() return item:GetUniqueId() end)
+            if ok and id then byId[id] = item end
+        end
+    end
+    local doomed, gone, restored = {}, 0, 0
+    for _, id in ipairs(e.clips) do
+        if byId[id] then doomed[#doomed + 1] = byId[id] else gone = gone + 1 end
+    end
+    for _, c in ipairs(e.comps) do
+        local item = byId[c.id]
+        local done = item and item:DeleteFusionCompByName(c.name)
+        if item and not done then
+            -- Resolve will not delete a clip's only comp: take the effect out of it and
+            -- wire the clip straight through, so it renders exactly as before.
+            local comp = item:GetFusionCompByName(c.name)
+            if comp then
+                local mi, mo
+                for _, tool in pairs(comp:GetToolList(false)) do
+                    if type(tool) ~= "number" then
+                        if tool.ID == "MediaIn" then mi = mi or tool
+                        elseif tool.ID == "MediaOut" then mo = mo or tool
+                        else tool:Delete() end
+                    end
+                end
+                if mi and mo then mo:ConnectInput("Input", mi) end
+                done = true
+            end
+        end
+        if done then restored = restored + 1 else gone = gone + 1 end
+    end
+    if #doomed > 0 then tl:DeleteClips(doomed, false) end
+    table.remove(Bins.J.stack)
+    local msg = "undid " .. (e.label or "last effect")
+    if gone > 0 then msg = msg .. "  (" .. gone .. " already removed)" end
+    return msg
+end
+
 local function applyClipEffect(effect, targetsOverride)
     local tl, proj = currentTimeline()
     if not tl then return "No timeline is open." end
@@ -1045,6 +1121,9 @@ local function applyClipEffect(effect, targetsOverride)
                     mediaIn:SetInput("DeepOutputMode", 0)
                     macro:ConnectInput(macro:FindMainInput(1).ID, mediaIn)
                     mediaOut:ConnectInput("Input", macro)
+                    for _, n in ipairs(shot:GetFusionCompNameList() or {}) do
+                        if not before[n] then Bins.J.addComp(shot, n, displayName(effect.name)) end
+                    end
                     placed = placed + 1
                 end
             end
@@ -1129,6 +1208,7 @@ local function applyClipEffect(effect, targetsOverride)
                     mediaIn:SetInput("DeepOutputMode", 0)
                     macro:ConnectInput(macro:FindMainInput(1).ID, mediaIn)
                     mediaOut:ConnectInput("Input", macro)
+                    Bins.J.addClip(copy, displayName(effect.name))
                     placed = placed + 1
                 end
             end
@@ -1275,7 +1355,10 @@ local function applyEffect(effect, targetsOverride)
                         if item then got = lengthOf(item)
                         else failed = "Resolve refused the trimmed placement" end
                     end
-                    if item then placed = placed + 1; dropped = got; nameClip(item, effect.name) end
+                    if item then
+                        placed = placed + 1; dropped = got; nameClip(item, effect.name)
+                        Bins.J.addClip(item, displayName(effect.name))
+                    end
                 end
             end
         end
@@ -1311,6 +1394,15 @@ local PLACE_ACTIONS = { START = true, PLAYHEAD = true, ONCUT = true, FULL = true
 
 -- "Both" is the two variants in sequence; each anchors itself.
 local function applyGroup(group, which, targetsOverride)
+    Bins.J.modLast = nil
+    Bins.J.begin(displayName(group.base))
+    local ok, res = pcall(Bins.J.inner, group, which, targetsOverride)
+    Bins.J.finish()
+    if not ok then error(res, 0) end
+    return res
+end
+
+function Bins.J.inner(group, which, targetsOverride)
     local wanted = {}
     if PLACE_ACTIONS[which] or which == "DUPLICATE" or which == "DIRECT" then
         local src = group.only or group.post or group.pre
@@ -1507,7 +1599,29 @@ local ctx = {
     bases = function() return BASES end,
     displayName = displayName,
     sectionOf = sectionOf,
-    applyEffect = applyEffect,
+    -- Add-on modules (Auto VFX...) call this once per cut: consecutive calls within a minute
+    -- merge into ONE undo step, so UNDO takes back the whole run.
+    applyEffect = function(effect, targets)
+        local now = os.time()
+        local merge = Bins.J.modLast and (now - Bins.J.modLast) < 60 and Bins.J.stack[#Bins.J.stack]
+        Bins.J.begin(displayName(effect.name))
+        local ok, res = pcall(applyEffect, effect, targets)
+        local e = Bins.J.current
+        Bins.J.current = nil
+        Bins.J.modLast = now
+        if e and (#e.clips > 0 or #e.comps > 0) then
+            if merge and merge.module then
+                for _, v in ipairs(e.clips) do merge.clips[#merge.clips + 1] = v end
+                for _, v in ipairs(e.comps) do merge.comps[#merge.comps + 1] = v end
+                merge.label = "automatic edit"
+            else
+                e.module = true
+                Bins.J.stack[#Bins.J.stack + 1] = e
+            end
+        end
+        if not ok then error(res, 0) end
+        return res
+    end,
     currentTimeline = currentTimeline,
     items = function() return itm end,
     window = function() return win end,
@@ -1560,6 +1674,7 @@ local effectsSection = ui:VGroup{
         ui:Button{ ID = "ApplyPost", Text = "POST", MinimumSize = { 150, 48 }, StyleSheet = APPLY_STYLE },
     },
     ui:HGroup{ Spacing = 6, Weight = 0, MinimumSize = { 0, 38 },
+        ui:Button{ ID = "Undo",    Text = "UNDO", ToolTip = "Remove the effect the Hub just placed (only what the Hub added)." },
         ui:Button{ ID = "Fav",     Text = "FAVOURITE" },
         ui:Button{ ID = "Refresh", Text = "RESCAN", ToolTip = "Pick up newly installed packs and restore missing presets." },
     },
@@ -2133,6 +2248,13 @@ win.On.ApplyPre.Clicked  = guard(function() if applyActions[1] then apply(applyA
 win.On.ApplyBoth.Clicked = guard(function() if applyActions[2] then apply(applyActions[2]) end end)
 win.On.ApplyPost.Clicked = guard(function() if applyActions[3] then apply(applyActions[3]) end end)
 
+win.On.Undo.Clicked = guard(function()
+    -- a UI placement afterwards ends the "merge Auto VFX runs" window
+    Bins.J.modLast = nil
+    local tl = currentTimeline()
+    itm.Status.Text = Bins.J.undo(tl)
+end)
+
 win.On.Fav.Clicked = guard(function()
     if not selectedGroup then itm.Status.Text = "pick an effect first" return end
     local group = selectedGroup
@@ -2342,7 +2464,7 @@ for _, mod in ipairs(MODULES) do
 end
 
 math.randomseed(os.time())
-local _, startupProject = currentTimeline()
+local startupProject = select(2, currentTimeline())
 local startupMessage
 if startupProject then
     local moved = Bins.tidy(startupProject)
@@ -2463,13 +2585,38 @@ if selftestStart then
             for _, g in ipairs(GROUPS) do if g.base == base then group = g end end
             if base == "AUTO" then
                 for _, m in ipairs(MODULES) do
-                    if m.id == "auto-vfx" and m.selftest then selftestApply = m.selftest(ctx, 99) end
+                    if m.id == "auto-vfx" and m.selftest then
+                        selftestApply = m.selftest(ctx, 99)
+                        if action == "UNDO" then
+                            local before = #(tl:GetItemListInTrack("video", 1) or {}) + #(tl:GetItemListInTrack("video", 2) or {}) + #(tl:GetItemListInTrack("video", 3) or {})
+                            local msg = Bins.J.undo(tl)
+                            selftestApply = selftestApply .. " || UNDO clips(v1-3) " .. before .. " -> "
+                                .. (#(tl:GetItemListInTrack("video", 1) or {}) + #(tl:GetItemListInTrack("video", 2) or {}) + #(tl:GetItemListInTrack("video", 3) or {})) .. " (" .. msg .. ") stack=" .. Bins.J.count()
+                        end
+                    end
                 end
             elseif group and clips[2] then
                 local c = clips[2]
                 local target = { { item = c, track = 1, s = math.floor(c:GetStart()), e = math.floor(c:GetEnd()) } }
+                local U = { want = action and action:match("%+UNDO$") }
+                if U.want then action = action:gsub("%+UNDO$", "") end
+                function U.census()
+                    local n = 0
+                    for tr = 1, tl:GetTrackCount("video") do
+                        for _, it in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+                            n = n + 1 + #(it:GetFusionCompNameList() or {}) * 100
+                        end
+                    end
+                    return n
+                end
+                U.c0 = U.census()
                 if action and action ~= "" then
                     selftestApply = action .. ": " .. applyGroup(group, action, target)
+                    if U.want then
+                        U.c1 = U.census()
+                        U.msg = Bins.J.undo(tl)
+                        selftestApply = selftestApply .. " || UNDO census " .. U.c0 .. " -> " .. U.c1 .. " -> " .. U.census() .. " (" .. U.msg .. ")"
+                    end
                 else
                     for _, v in ipairs(variantsOf(group)) do
                         selftestApply = selftestApply .. applyEffect(v, target) .. " || "

@@ -1,4 +1,4 @@
-version = 1.7.5
+version = 1.7.6
 file = hub.lua
-sha256 = 9bfc343967e8a3ea118dfbc1387d8516ffaa38fcd78077ae12be677bb1598246
-notes = The Hub is now under Workspace > Scripts > VFX HUB
+sha256 = 96b70a872a36fc9bf5b9b69ea8fd9278150da2fb3569805121fec2ef0d04f6e5
+notes = New UNDO button: removes the effect you just placed
