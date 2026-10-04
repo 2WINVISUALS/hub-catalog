@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.7.7"
+local HUB_VERSION = "1.7.8"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -916,7 +916,7 @@ local function playheadFrame(tl)
 end
 
 -- The selected clip, plus the track it sits on.
-local function findTarget(tl)
+local function findTarget(tl, preferPlayhead)
     -- Footage resolves to a media pool item; an effect clip on the timeline
     -- never does, which makes this the dependable "is it our clip" test.
     local function isGenerator(item)
@@ -931,6 +931,22 @@ local function findTarget(tl)
     -- ipairs, not pairs: Resolve's Lua lists carry an extra "__flags" key.
     local sel = tl:GetSelectedClips()
     if sel then for _, c in ipairs(sel) do if not isGenerator(c) then picks[#picks + 1] = c end end end
+    -- Resolve auto-selects one half of a fresh split, usually the LEFT piece, whose head is
+    -- the PREVIOUS cut. For transitions and overlays the playhead decides: a single selected
+    -- clip that does not contain the playhead, while the playhead sits on a cut, is that
+    -- leftover selection and is dropped. (Clip effects always follow the selection.)
+    if preferPlayhead and #picks == 1 then
+        local frame = playheadFrame(tl)
+        if frame and not (picks[1]:GetStart() <= frame and frame < picks[1]:GetEnd()) then
+            local onCut = false
+            for tr = 1, tl:GetTrackCount("video") do
+                for _, item in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+                    if math.floor(item:GetStart()) == frame and not isGenerator(item) then onCut = true end
+                end
+            end
+            if onCut then picks = {} end
+        end
+    end
     if #picks == 0 then
         -- Not GetCurrentVideoItem: after a cut or playhead move it keeps naming the previous
         -- clip for ~0.7 s. The timecode and the track lists are current, so use those.
@@ -1111,7 +1127,7 @@ local function applyClipEffect(effect, targetsOverride)
     if not fileExists(effect.setting) then return "Failed: " .. effect.name .. " is missing from its pack" end
     local targets, err = targetsOverride, nil
     if not targets then
-        targets, err = findTarget(tl)
+        targets, err = findTarget(tl, false)
         if not targets then return err end
     end
     local mp = proj:GetMediaPool()
@@ -1291,7 +1307,7 @@ local function applyEffect(effect, targetsOverride)
 
     local targets, err = targetsOverride, nil
     if not targets then
-        targets, err = findTarget(tl)
+        targets, err = findTarget(tl, true)
         if not targets then return err end
     end
 
@@ -1429,7 +1445,7 @@ function Bins.J.inner(group, which, targetsOverride)
         if not tl then return "No timeline is open." end
         local targets, err = targetsOverride, nil
         if not targets then
-            targets, err = findTarget(tl)
+            targets, err = findTarget(tl, not effect.clip)
             if not targets then return err end
         end
         if which == "PLAYHEAD" then
@@ -1460,7 +1476,7 @@ function Bins.J.inner(group, which, targetsOverride)
     -- Capture the targets once: PRE can change Resolve's selection.
     local targets, err = targetsOverride, nil
     if not targets then
-        targets, err = findTarget(tl)
+        targets, err = findTarget(tl, not (group.only and group.only.clip))
         if not targets then return err end
     end
     local parts = {}
