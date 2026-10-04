@@ -1,4 +1,6 @@
-version = 1.8.0
+version = 1.8.1
 file = hub.lua
-sha256 = 547238309da595d0e9964799b76ce9d296ef453ad3e1bad70827f2a430f50389
-notes = Small layout improvements and fixes
+sha256 = 4d9ef293c1696df7332932090a2e1a835cf438b15917a3a47d37b12e88d5c685
+notes = New: snap the Hub left or right beside your viewer with the icons at the top right
+notes = New: UNDO button removes the effect you just placed
+notes = Faster, more accurate placement on the cut under your playhead

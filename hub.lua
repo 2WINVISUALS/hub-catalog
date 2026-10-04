@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.8.0"
+local HUB_VERSION = "1.8.1"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -2858,7 +2858,7 @@ end
 local cleanupIcon
 win:Show()
 fitPanels()
-if Bins.L.ok and fileExists(HUB_DIR .. "/snap_beta.txt") then   -- opt-in while this is tried out
+if Bins.L.ok then
     if pcall(function() itm.SnapRow.Hidden = false end) then fitPanels() end
 end
 for i = 1, 3 do disp:StepLoop(0.01) end
@@ -2873,7 +2873,7 @@ local selftestStart = fileExists(selftest) and os.clock() or nil
 local selftestApply = ""
 local selftestSpec = ""
 -- reopen in the layout the customer last chose (not during self-tests)
-if Bins.L.ok and not selftestStart and fileExists(HUB_DIR .. "/snap_beta.txt") then
+if Bins.L.ok and not selftestStart then
     local saved = readAll(Bins.L.file)
     saved = saved and saved:match("^%s*(%a+)")
     if saved == "LEFT" or saved == "RIGHT" then Bins.L.pending = saved end
