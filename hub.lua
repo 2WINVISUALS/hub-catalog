@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.7.9"
+local HUB_VERSION = "1.8.0"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -1565,6 +1565,70 @@ local STYLE = [[
 ]]
 local APPLY_STYLE = "font-size:15px; font-weight:800; letter-spacing:2px;"
 local TAB_STYLE   = "font-size:13px; font-weight:800; letter-spacing:3px;"
+-- Snap / compact layout (state and functions hang off Bins: the main chunk is at Lua's local limit).
+Bins.L = { compact = false, pending = nil, file = HUB_DIR .. "/layout.txt",
+            style = "font-size:11px; font-weight:700; letter-spacing:1px;" }
+function Bins.L.minW() return Bins.L.compact and 360 or 700 end
+function Bins.L.minH() return Bins.L.compact and 540 or 760 end
+-- The snap buttons: three small icons on a slim row, right-aligned. The pictures are embedded here
+-- (a Hub update replaces only this file) and written to UI\ once; without them the buttons fall
+-- back to text. Created hidden, like the update bar, and shown once the window is up (a row
+-- created visible left an empty, unpainted gap until the window was resized).
+Bins.L.png = {
+    left  = "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",
+    right = "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",
+    full  = "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",
+    save  = "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",
+}
+function Bins.L.icon(name)
+    local path = HUB_DIR .. "/UI/snap2_" .. name .. ".png"
+    if not fileExists(path) then
+        local text = Bins.L.png[name]:gsub("[^%w%+/]", "")
+        local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        local index = {}
+        for i = 1, 64 do index[chars:sub(i, i)] = i - 1 end
+        local out, bits, nbits = {}, 0, 0
+        for i = 1, #text do
+            bits = bits * 64 + index[text:sub(i, i)]; nbits = nbits + 6
+            if nbits >= 8 then
+                nbits = nbits - 8
+                local byte = math.floor(bits / 2 ^ nbits)
+                out[#out + 1] = string.char(byte)
+                bits = bits - byte * 2 ^ nbits
+            end
+        end
+        writeAll(path, table.concat(out))
+    end
+    if fileExists(path) then return ui:Icon{ File = path } end
+    return nil
+end
+function Bins.L.button(id, name, fallback, tip)
+    local icon = Bins.L.icon(name)
+    return ui:Button{ ID = id, ToolTip = tip, MinimumSize = { 40, 28 }, MaximumSize = { 54, 28 },
+                      Icon = icon, IconSize = { 28, 22 }, Text = icon and "" or fallback, Flat = true,
+                      StyleSheet = "QPushButton{border:none;background:transparent;} QPushButton:hover{background-color:rgba(224,36,43,0.22);border-radius:8px;}" }
+end
+-- Anything going wrong while building the snap controls must never stop the Hub opening:
+-- on any error the row is replaced by an empty, hidden one and the feature stays off.
+Bins.L.ok = pcall(function()
+    Bins.L.row = { ID = "SnapRow", Weight = 0, Spacing = 6, MinimumSize = { 0, 30 },
+        -- the small logo that replaces the big one in the column layout (created hidden, shown by apply)
+        ui:Button{ ID = "LogoMini", Flat = true, Hidden = true, Weight = 0, Text = "",
+                   MinimumSize = { 84, 30 }, MaximumSize = { 100, 30 }, IconSize = { 77, 30 },
+                   StyleSheet = "border:none;background:transparent;" },
+        ui:HGap(0, 1),
+        ui:HGroup{ ID = "SnapSaveBox", Weight = 0, Hidden = true,
+            Bins.L.button("SnapSave", "save", "SET", "Save the Hub's current size and position as your snap spot for this side. Press it again on the saved spot to go back to the default."),
+        },
+        Bins.L.button("SnapLeft",  "left",  "<",    "Shrink the Hub into a column on the left, over the Media Pool."),
+        Bins.L.button("SnapRight", "right", ">",    "Shrink the Hub into a column on the right, over the Inspector."),
+        Bins.L.button("SnapFull",  "full",  "FULL", "Back to the normal, larger Hub window."),
+    }
+    Bins.L.row.Hidden = true
+end)
+if not Bins.L.ok then
+    Bins.L.row = { ID = "SnapRow", Weight = 0, MinimumSize = { 0, 1 }, Hidden = true }
+end
 
 -- Filters, two levels, all from the installed packs:
 --   sections   ALL | EFFECTS | TEXT | CLIP FX | OVERLAYS | FAVS  (only those in use)
@@ -1775,6 +1839,7 @@ local rootGroup = { ID = "root", Spacing = 6, Weight = 1,
                   StyleSheet = "color:#FFFFFF;font-weight:700;letter-spacing:1px;", Text = "" },
         ui:Button{ ID = "UpdateBarGo", Text = "UPDATE", Weight = 0, MinimumSize = { 120, 32 } },
     },
+    ui:HGroup(Bins.L.row),
     ui:HGroup(tabRow),
     effectsSection,
 }
@@ -1869,16 +1934,17 @@ end
 local previewHeight = 0
 local layoutPending = 0
 
+
 local function processLayout()
     if layoutPending > 0 then win:RecalcLayout(); layoutPending = layoutPending - 1 end
 end
 
 local function fitPanels()
-    local minimum = 760 + previewHeight
-    win.MinimumSize = { 700, minimum }
+    local minimum = Bins.L.minH() + previewHeight
+    win.MinimumSize = { Bins.L.minW(), minimum }
     local geometry = win.Geometry
     if geometry and geometry[4] < minimum then
-        win.Geometry = { geometry[1], geometry[2], math.max(700, geometry[3]), minimum }
+        win.Geometry = { geometry[1], geometry[2], math.max(Bins.L.minW(), geometry[3]), minimum }
     end
     win:RecalcLayout()
     layoutPending = 20
@@ -1921,7 +1987,7 @@ local function populate()
             row.ToolTip[0] = (have and "Ready to place" or "Preset file missing - reinstall this pack")
                              .. "  |  " .. group.pack.name
             if group.thumb then row.Icon[0] = ui:Icon({ File = group.thumb }) end
-            row.SizeHint[0] = { 640, 116 }
+            row.SizeHint[0] = Bins.L.compact and { 380, 72 } or { 640, 116 }
             tree:AddTopLevelItem(row)
             rowGroup[row.Text[0]] = group
             if group.animation then animatedRows[#animatedRows + 1] = { row = row, animation = group.animation } end
@@ -1995,7 +2061,10 @@ local function advanceAnimations()
     if logoAnimation and logoFrame < logoAnimation.count and itm.Logo then
         logoStart = logoStart or now
         local frame = math.min(logoAnimation.count, math.floor((now - logoStart) * logoAnimation.fps) + 1)
-        if frame ~= logoFrame then itm.Logo.Icon = logoAnimation.frames[frame]; logoFrame = frame end
+        if frame ~= logoFrame then
+            itm.Logo.Icon = logoAnimation.frames[frame]; logoFrame = frame
+            if Bins.L.compact and itm.LogoMini then itm.LogoMini.Icon = logoAnimation.frames[frame] end
+        end
     end
     for _, entry in ipairs(animatedRows) do
         local a = entry.animation
@@ -2007,6 +2076,197 @@ local function advanceAnimations()
         local frame = math.floor(now * a.fps) % a.count + 1
         if frame ~= previewAnimationFrame then itm.Preview.Icon = a.frames[frame]; previewAnimationFrame = frame end
     end
+end
+
+-- The usable area of the monitor the Hub is on, in the same units as win.Geometry: maximise the
+-- window invisibly, read it back, restore it. Works the same on Windows and macOS.
+function Bins.L.screen()
+    local g = win.Geometry
+    local m
+    -- never leave the window invisible or maximised, whatever goes wrong in between
+    local ok = pcall(function()
+        -- let the window settle (macOS animates the zoom): stop once the size repeats
+        local function settle(limit)
+            local last, same = nil, 0
+            for _ = 1, limit do
+                disp:StepLoop(0.01); bmd.wait(0.03)
+                local cur = win.Geometry
+                local key = cur and table.concat(cur, ",")
+                if key == last then same = same + 1 else same = 0 end
+                last = key
+                if same >= 3 then break end
+            end
+            return win.Geometry
+        end
+        win.WindowOpacity = 0
+        win:ShowMaximized()
+        m = settle(40)
+        win:ShowNormal()
+        settle(40)
+    end)
+    pcall(function() win:ShowNormal() end)
+    pcall(function() win.Geometry = g end)
+    pcall(function() win.WindowOpacity = 1 end)
+    if ok and m and m[3] and m[3] >= 600 and m[4] >= 400 then return m end
+    return nil
+end
+
+-- Tighter text and buttons in the column layout; the original sizes come straight back.
+function Bins.L.dress()
+    local c = Bins.L.compact
+    local function put(id, style, minw, minh)
+        local b = itm[id]
+        if not b then return end
+        if style then b.StyleSheet = style end
+        if minw then b.MinimumSize = { minw, minh or 0 } end
+    end
+    local tab = c and "font-size:11px; font-weight:800; letter-spacing:1px;" or TAB_STYLE
+    local sec = c and "font-size:11px; font-weight:800; letter-spacing:1px;" or SECTION_STYLE
+    local app = c and "font-size:13px; font-weight:800; letter-spacing:1px;" or APPLY_STYLE
+    put("TabFx", tab); put("TabStore", tab)
+    for _, mod in ipairs(MODULES) do if not mod.failed then put(mod.tabId, tab) end end
+    for _, b in ipairs(SECTION_BUTTONS) do put(b.id, sec) end
+    put("ApplyPre", app, c and 70 or 150, 48); put("ApplyBoth", app, c and 70 or 180, 48); put("ApplyPost", app, c and 70 or 150, 48)
+    if itm.List then itm.List.MinimumSize = { 0, c and 150 or 220 } end
+    if itm.StoreList then
+        itm.StoreList.ColumnWidth[0] = c and 220 or 430
+        itm.StoreList.ColumnWidth[1] = c and 130 or 180
+    end
+end
+
+-- A spot the customer set themselves: fractions of the usable screen, one per side.
+Bins.L.customFile = HUB_DIR .. "/snap_custom.txt"
+function Bins.L.loadCustom()
+    local t = {}
+    local data = readAll(Bins.L.customFile)
+    if data then
+        for side, a, b, c, d in data:gmatch("(%a+)%s+([%d%.%-]+)%s+([%d%.%-]+)%s+([%d%.%-]+)%s+([%d%.%-]+)") do
+            if side == "LEFT" or side == "RIGHT" then t[side] = { tonumber(a), tonumber(b), tonumber(c), tonumber(d) } end
+        end
+    end
+    return t
+end
+function Bins.L.storeCustom(t)
+    local lines = {}
+    for _, side in ipairs({ "LEFT", "RIGHT" }) do
+        local v = t[side]
+        if v then lines[#lines + 1] = string.format("%s %.5f %.5f %.5f %.5f", side, v[1], v[2], v[3], v[4]) end
+    end
+    if #lines == 0 then os.remove(Bins.L.customFile) else writeAll(Bins.L.customFile, table.concat(lines, "\n") .. "\n") end
+end
+function Bins.L.saveHere()
+    local L = Bins.L
+    if not L.compact then
+        itm.Status.Text = "snap to the left or right first, set the size you like, then press this"
+        return
+    end
+    local g = win.Geometry
+    local m = L.screen()
+    if not (m and g) then itm.Status.Text = "couldn't read the screen size"; return end
+    local side = (g[1] + g[3] / 2 < m[1] + m[3] / 2) and "LEFT" or "RIGHT"
+    local cur = { (g[1] - m[1]) / m[3], (g[2] - m[2]) / m[4], g[3] / m[3], g[4] / m[4] }
+    local t = L.loadCustom()
+    local same = t[side] ~= nil
+    if same then for i = 1, 4 do if math.abs(t[side][i] - cur[i]) > 0.004 then same = false end end end
+    if same then
+        t[side] = nil
+        itm.Status.Text = "back to the default " .. side:lower() .. " snap"
+    else
+        t[side] = cur
+        itm.Status.Text = "saved as your " .. side:lower() .. " snap spot"
+    end
+    L.storeCustom(t)
+end
+
+function Bins.L.save(mode)
+    local f = io.open(Bins.L.file, "w")
+    if f then f:write(mode or ""); f:close() end
+end
+
+-- mode: "LEFT" | "RIGHT" (a column on that side) | "FULL" (the normal window)
+function Bins.L.apply(mode, remember)
+    local L = Bins.L
+    local compact = (mode == "LEFT" or mode == "RIGHT")
+    L.compact = compact
+    if itm.Logo then itm.Logo.Hidden = compact end
+    if itm.Footer then itm.Footer.Hidden = compact end
+    if itm.LogoMini then
+        if compact then
+            local icon = logoAnimation and logoAnimation.frames[logoFrame]
+                         or (fileExists(LOGO) and ui:Icon{ File = LOGO } or nil)
+            if icon then itm.LogoMini.Icon = icon else itm.LogoMini.Text = "VFX HUB" end
+        end
+        itm.LogoMini.Hidden = not compact
+    end
+    if itm.SnapSaveBox then itm.SnapSaveBox.Hidden = not compact end
+    tree.IconSize = compact and { 106, 60 } or { 176, 99 }
+    tree.ColumnWidth[0] = compact and 290 or 640
+    Bins.L.dress()
+    -- no preview panel in the column, so its toggle goes too and the search bar takes the width
+    -- remembered from the clicks (the toggle starts ON); reading it back right after the window opens is not reliable
+    if compact and not L.compactBefore then L.previewWas = (L.previewOn ~= false) end
+    if compact then
+        itm.PreviewToggle.Checked = false
+    elseif L.compactBefore and L.previewWas ~= nil then
+        itm.PreviewToggle.Checked = L.previewWas
+    end
+    itm.PreviewToggle.Hidden = compact
+    L.compactBefore = compact
+    showPreview(selectedGroup)   -- refreshes the preview + minimum size
+    populate()
+    local m = L.screen()
+    local g = win.Geometry
+    if compact and m then
+        local w = math.min(600, math.max(L.minW(), math.floor(m[3] * 0.255)))
+        local h = math.min(m[4], math.max(L.minH(), math.floor(m[4] * 0.61)))
+        local x = (mode == "LEFT") and m[1] or (m[1] + m[3] - w)
+        local y = m[2]
+        local mine = L.loadCustom()[mode]
+        if mine then   -- the spot the customer saved for this side
+            w = math.max(L.minW(), math.floor(mine[3] * m[3]))
+            h = math.min(m[4], math.max(L.minH(), math.floor(mine[4] * m[4])))
+            x = math.max(m[1], math.min(m[1] + math.floor(mine[1] * m[3]), m[1] + m[3] - w))
+            y = math.max(m[2], math.min(m[2] + math.floor(mine[2] * m[4]), m[2] + m[4] - h))
+        end
+        win.MinimumSize = { L.minW(), L.minH() }
+        win.Geometry = { x, y, w, h }
+        -- the layout may refuse to go as narrow as asked (bigger fonts, other OS): re-read the
+        -- real width and keep the column on its side of the screen
+        for _ = 1, 6 do disp:StepLoop(0.01); bmd.wait(0.02) end
+        local real = win.Geometry
+        if real and real[3] > w then
+            local rx = (mode == "LEFT") and x or math.max(m[1], x + w - real[3])
+            win.Geometry = { rx, y, real[3], real[4] }
+        end
+    elseif compact then
+        win.Geometry = { g[1], g[2], L.minW(), L.minH() }
+    else
+        -- the normal window again, kept fully on the screen it is on
+        local w, h = 700, 960
+        local x, y = g[1], g[2]
+        if m then
+            h = math.max(L.minH(), math.min(h, m[4]))
+            x = math.max(m[1], math.min(x, m[1] + m[3] - w))
+            y = math.max(m[2], math.min(y, m[2] + m[4] - h))
+        end
+        win.Geometry = { x, y, w, h }
+    end
+    fitPanels()
+    -- a column on the right keeps its right edge on the screen if a tab makes it wider
+    L.right = (compact and mode == "RIGHT" and m) and (m[1] + m[3]) or nil
+    L.lastW = win.Geometry and win.Geometry[3]
+    -- the toggle's state only settles after the layout pass: refresh the preview + its label once more
+    showPreview(selectedGroup)
+    -- play the logo animation again for the new layout
+    if logoAnimation then
+        logoFrame, logoStart = 1, nil
+        local first = logoAnimation.frames[1]
+        if itm.Logo then itm.Logo.Icon = first end
+        if compact and itm.LogoMini then itm.LogoMini.Icon = first end
+    end
+    if remember ~= false then L.save(mode) end
+    local geo = win.Geometry
+    return mode, geo
 end
 
 --------------------------------------------------------------------
@@ -2238,7 +2498,10 @@ win.On.Search.TextChanged = guard(function()
     populate()
 end)
 
-win.On.PreviewToggle.Clicked = guard(function() showPreview(selectedGroup) end)
+win.On.PreviewToggle.Clicked = guard(function()
+    Bins.L.previewOn = itm.PreviewToggle.Checked   -- what the customer chose, for the snap layout
+    showPreview(selectedGroup)
+end)
 
 -- The event carries the row that was acted on: the dependable way to know.
 local function groupFromEvent(ev)
@@ -2482,10 +2745,20 @@ local function rescan()
     showPreview(nil)
     populate()
     updateApplyButtons(nil)
+    if Bins.L.ok and Bins.L.dress then pcall(Bins.L.dress) end
     if not itm.StoreSection.Hidden then populateStore() end
     itm.Status.Text = itm.Status.Text .. " | " .. message
 end
 win.On.Refresh.Clicked = guard(rescan)
+-- run from the main loop, not inside the click: the screen probe steps the UI loop itself
+if Bins.L.ok then
+    pcall(function()
+        win.On.SnapLeft.Clicked  = guard(function() Bins.L.pending = "LEFT" end)
+        win.On.SnapRight.Clicked = guard(function() Bins.L.pending = "RIGHT" end)
+        win.On.SnapFull.Clicked  = guard(function() Bins.L.pending = "FULL" end)
+        win.On.SnapSave.Clicked  = guard(function() Bins.L.pending = "SAVE" end)
+    end)
+end
 
 local closed = false
 win.On.Hub.Close = guard(function() closed = true; disp:ExitLoop() end)
@@ -2585,6 +2858,9 @@ end
 local cleanupIcon
 win:Show()
 fitPanels()
+if Bins.L.ok and fileExists(HUB_DIR .. "/snap_beta.txt") then   -- opt-in while this is tried out
+    if pcall(function() itm.SnapRow.Hidden = false end) then fitPanels() end
+end
 for i = 1, 3 do disp:StepLoop(0.01) end
 do
     local ok, cleanup = pcall(setTitleIcon, win, ICON)
@@ -2596,12 +2872,24 @@ local selftest = HUB_DIR .. "/.selftest"
 local selftestStart = fileExists(selftest) and os.clock() or nil
 local selftestApply = ""
 local selftestSpec = ""
+-- reopen in the layout the customer last chose (not during self-tests)
+if Bins.L.ok and not selftestStart and fileExists(HUB_DIR .. "/snap_beta.txt") then
+    local saved = readAll(Bins.L.file)
+    saved = saved and saved:match("^%s*(%a+)")
+    if saved == "LEFT" or saved == "RIGHT" then Bins.L.pending = saved end
+end
 if selftestStart then
     -- Optional second line: "<effect base>|<timeline name>" applies that effect
     -- (Pre and Post) at the second clip's head on a scratch timeline.
     local f = io.open(selftest, "r")
     if f then f:read("*l"); local spec = f:read("*l"); f:close()
         selftestSpec = spec or ""
+        -- "SNAP|LEFT" / "SNAP|RIGHT" / "SNAP|FULL": run the snap, stay open longer for a screenshot
+        if (spec or ""):match("^SNAP|%a+") then
+            Bins.L.queue = {}
+            for word in spec:match("^SNAP|([%a,]+)"):gmatch("%a+") do Bins.L.queue[#Bins.L.queue + 1] = word end
+            Bins.L.pending = table.remove(Bins.L.queue, 1); Bins.L.hold = 12
+        end
         -- optional third field: an apply action (PRE/BOTH/POST/START/PLAYHEAD/ONCUT/FULL/DUPLICATE/DIRECT)
         local base, tlName, action = (spec or ""):match("^(.-)|([^|]+)|?(.*)$")
         local _, proj = currentTimeline()
@@ -2689,9 +2977,35 @@ while not closed do
         end)
     end
     processLayout()
+    if Bins.L.right then
+        local g = win.Geometry
+        if g and g[3] ~= Bins.L.lastW then
+            Bins.L.lastW = g[3]
+            if g[1] + g[3] > Bins.L.right then win.Geometry = { Bins.L.right - g[3], g[2], g[3], g[4] } end
+        end
+    end
+    if Bins.L.pending then
+        local mode = Bins.L.pending
+        Bins.L.pending = nil
+        if mode == "SAVE" then
+            guard(Bins.L.saveHere)()
+        elseif selftestStart and mode == "WIDER" then   -- self-test only: pretend the customer dragged the edge
+            local g = win.Geometry
+            win.Geometry = { g[1], g[2], g[3] + 60, g[4] - 40 }
+        elseif selftestStart and (mode == "STORE" or mode == "AUTO") then
+            guard(function() setTab(mode == "STORE" and "STORE" or "auto-vfx") end)()   -- self-test only
+        else
+            guard(function() Bins.L.apply(mode, not selftestStart) end)()
+        end
+        if selftestStart then
+            local g = win.Geometry
+            selftestApply = selftestApply .. mode .. " geometry=" .. table.concat(g, ",") .. " compact=" .. tostring(Bins.L.compact) .. " logoframe=" .. tostring(logoFrame) .. "/" .. tostring(logoAnimation and logoAnimation.count) .. " t=" .. string.format("%.2f", animationClock()) .. " was=" .. tostring(Bins.L.previewWas) .. " checked=" .. tostring(itm.PreviewToggle.Checked) .. " ; "
+            if Bins.L.queue and #Bins.L.queue > 0 then Bins.L.pending = table.remove(Bins.L.queue, 1) end
+        end
+    end
     advanceAnimations()
     bmd.wait(0.01)
-    if selftestStart and os.clock() - selftestStart > 2 then
+    if selftestStart and os.clock() - selftestStart > (Bins.L.hold or 2) then
         local f = io.open(HUB_DIR .. "/.selftest_result", "w")
         if f then
             local mods = {}
@@ -2705,6 +3019,7 @@ while not closed do
                 .. (update.release and (" " .. update.release.version) or "") .. (update.error and (" " .. update.error) or "")
                 .. "\nupdateinfo=" .. tostring(itm.UpdateInfo.Text)
                 .. "\nstore=" .. #STORE_ORDER .. "\nstoreids=" .. table.concat(STORE_ORDER, ",") .. "\nstatus=" .. tostring(itm.Status.Text)
+                .. "\nsnaprow_hidden=" .. tostring(itm.SnapRow and itm.SnapRow.Hidden) .. " logoframe_end=" .. tostring(logoFrame) .. "/" .. tostring(logoAnimation and logoAnimation.count)
                 .. "\napply=" .. selftestApply .. "\n")
             f:close()
         end
