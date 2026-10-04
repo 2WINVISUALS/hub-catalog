@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.7.8"
+local HUB_VERSION = "1.7.9"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -922,6 +922,18 @@ local function findTarget(tl, preferPlayhead)
     local function isGenerator(item)
         return item ~= nil and item:GetMediaPoolItem() == nil
     end
+    -- Each Resolve call costs ~0.5 ms, so never walk a whole track: a track's items are in
+    -- timeline order and never overlap, so binary-search the last item starting at or
+    -- before the frame (about ten calls however long the timeline is).
+    local function lastStartingBy(list, frame)
+        local lo, hi, found = 1, #list, nil
+        while lo <= hi do
+            local mid = math.floor((lo + hi) / 2)
+            if math.floor(list[mid]:GetStart()) <= frame then found = list[mid]; lo = mid + 1
+            else hi = mid - 1 end
+        end
+        return found
+    end
 
     -- Highlighted FOOTAGE is the target. Highlighted effect clips are ignored (they are
     -- usually just left selected from before): with no footage highlighted, the clip
@@ -940,9 +952,8 @@ local function findTarget(tl, preferPlayhead)
         if frame and not (picks[1]:GetStart() <= frame and frame < picks[1]:GetEnd()) then
             local onCut = false
             for tr = 1, tl:GetTrackCount("video") do
-                for _, item in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
-                    if math.floor(item:GetStart()) == frame and not isGenerator(item) then onCut = true end
-                end
+                local item = lastStartingBy(tl:GetItemListInTrack("video", tr) or {}, frame)
+                if item and math.floor(item:GetStart()) == frame and not isGenerator(item) then onCut = true end
             end
             if onCut then picks = {} end
         end
@@ -953,9 +964,8 @@ local function findTarget(tl, preferPlayhead)
         local frame, cur = playheadFrame(tl), nil
         if frame then
             for tr = 1, tl:GetTrackCount("video") do
-                for _, item in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
-                    if item:GetStart() <= frame and frame < item:GetEnd() then cur = item end
-                end
+                local item = lastStartingBy(tl:GetItemListInTrack("video", tr) or {}, frame)
+                if item and frame < item:GetEnd() then cur = item end   -- the highest track wins
             end
         else
             cur = tl:GetCurrentVideoItem()
@@ -971,12 +981,9 @@ local function findTarget(tl, preferPlayhead)
             local s, e = math.floor(clip:GetStart()), math.floor(clip:GetEnd())
             local under
             for tr = 1, tl:GetTrackCount("video") do
-                for _, item in ipairs(tl:GetItemListInTrack("video", tr)) do
-                    if not under and not isGenerator(item)
-                       and item:GetStart() <= s and item:GetEnd() >= e then
-                        under = item
-                    end
-                end
+                if under then break end
+                local item = lastStartingBy(tl:GetItemListInTrack("video", tr) or {}, s)
+                if item and not isGenerator(item) and item:GetEnd() >= e then under = item end
             end
             clip = under or clip
         end
@@ -992,8 +999,8 @@ local function findTarget(tl, preferPlayhead)
         local track
         for tr = 1, tl:GetTrackCount("video") do
             for _, item in ipairs(tl:GetItemListInTrack("video", tr)) do
-                if item:GetUniqueId() == id
-                   or (item:GetName() == nm and math.floor(item:GetStart()) == s) then
+                -- the same clip always has the same start, so the cheap test goes first
+                if math.floor(item:GetStart()) == s and (item:GetUniqueId() == id or item:GetName() == nm) then
                     track = track or tr
                 end
             end

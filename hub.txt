@@ -1,5 +1,6 @@
-version = 1.7.8
+version = 1.7.9
 file = hub.lua
-sha256 = c710ccf8e3b83ee7ac9fe235bdc4c410dbae9915949f26559462ff121359eddf
+sha256 = 9212b319caf99b46d79203530b0779b13b231ede977907288e5a3fd6886e41b9
 notes = New UNDO button: removes the effect you just placed
 notes = Fixed: an effect applied right after splitting a clip could land on the previous cut
+notes = Faster effect placement on long timelines
