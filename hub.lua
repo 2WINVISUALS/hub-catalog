@@ -37,7 +37,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.8.1"
+local HUB_VERSION = "1.9.0"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -692,6 +692,288 @@ end
 -- be renamed by script, so they keep their old names there).
 local Bins = { HUB = "2WIN VFX Hub", LEGACY = "2WIN VFX Hub - " }
 
+-- presets.drb holds 23.976 media, and some presets start their comp a few frames before the clip.
+-- Resolve 21.1.1 re-bases a clip's comp by one hour at the TIMELINE rate whenever it saves the comp
+-- in full (Inspector tweak, duplicate, move, reload): a 23.976 clip on a 29.97 (etc.) timeline then
+-- freezes the footage under it, and a comp starting before its clip holds its last frames.
+-- So the Hub uses a copy of each pack's presets made for the timeline's rate, with every comp starting
+-- on the clip's first frame. A pack may ship presets_<fps>.drb; otherwise the Hub builds that copy
+-- once from presets.drb (Packs/<pack>/Generated/), with tar (Windows 10+ and macOS have it).
+-- Anything failing leaves the Hub exactly as before (presets.drb as is).
+Bins.RATES = { "23.976", "24", "25", "29.97", "30", "47.952", "48", "50", "59.94", "60", "119.88", "120" }
+Bins.Rate = { VERSION = "r1", failed = {} }
+
+-- Timeline rate -> tag ("29.97"...), or nil when unknown or this pack's copy could not be made.
+function Bins.rateTag(tl, pack)
+    local ok, v = pcall(function() return tl:GetSetting("timelineFrameRate") end)
+    local fps = ok and tonumber(tostring(v or ""):match("[%d%.]+"))
+    if not fps then return nil end
+    for _, tag in ipairs(Bins.RATES) do
+        if math.abs(fps - tonumber(tag)) < 0.01 then
+            if pack and Bins.Rate.failed[pack.id .. "@" .. tag] then return nil end
+            return tag
+        end
+    end
+    return nil
+end
+
+do
+    local R = Bins.Rate
+    local isWin = package.config:sub(1, 1) == "\\"
+    local EXACT = { ["23.976"] = 24000 / 1001, ["29.97"] = 30000 / 1001, ["47.952"] = 48000 / 1001,
+                    ["59.94"] = 60000 / 1001, ["119.88"] = 120000 / 1001 }
+    -- The two preset records ever shipped zstd-compressed (Lua can't inflate zstd): their plain form.
+    local KNOWN = {
+        ["00000002000000528128b52ffd205045020014040a270a181a100020f6eeada50d1209466c617368205072653004120f41646a7573746d656e7420436c69701a0909872211b5dcf93740214d621058f11fac40280601001d3002"] =
+            "0a270a181a100000000000000000000000000000000020f6eeada50d1209466c617368205072653004120f41646a7573746d656e7420436c69701a0909872211b5dcf93740214d621058f11fac402806",
+        ["00000002000000578128b52ffd20556d020064040a2c0a181a100020c888eea90d120e4d563220526970706c65205072653004120f41646a7573746d656e7420436c69701a0909872211b5dcf937402180dc6b2e9c20ac40281401001d3002"] =
+            "0a2c0a181a100000000000000000000000000000000020c888eea90d120e4d563220526970706c65205072653004120f41646a7573746d656e7420436c69701a0909872211b5dcf937402180dc6b2e9c20ac402814",
+    }
+
+    local function hex2bin(h) return (h:gsub("%x%x", function(c) return string.char(tonumber(c, 16)) end)) end
+    local function bin2hex(b) return (b:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
+    local function be32(n) return string.char(math.floor(n / 16777216) % 256, math.floor(n / 65536) % 256, math.floor(n / 256) % 256, n % 256) end
+
+    -- IEEE-754 little-endian doubles (positive, normal numbers are all this needs)
+    local function packDouble(x)
+        local m, e = math.frexp(x)
+        local mant = (m * 2 - 1) * 2 ^ 52
+        local exp = e - 1 + 1023
+        local b = {}
+        for i = 1, 6 do b[i] = mant % 256; mant = math.floor(mant / 256) end
+        b[7] = (exp % 16) * 16 + mant
+        b[8] = math.floor(exp / 16)
+        return string.char(unpack(b))
+    end
+    R.packDouble = packDouble
+
+    -- protobuf: list of { field, wire, value } (varints as numbers, the rest as byte strings)
+    local function varint(s, i)
+        local n, mul = 0, 1
+        while true do
+            local c = s:byte(i); i = i + 1
+            n = n + (c % 128) * mul; mul = mul * 128
+            if c < 128 then return n, i end
+        end
+    end
+    local function encVarint(n)
+        local out = {}
+        repeat
+            local c = n % 128; n = math.floor(n / 128)
+            out[#out + 1] = string.char(n > 0 and c + 128 or c)
+        until n == 0
+        return table.concat(out)
+    end
+    local function pbParse(s)
+        local out, i = {}, 1
+        while i <= #s do
+            local key; key, i = varint(s, i)
+            local f, w = math.floor(key / 8), key % 8
+            local v
+            if w == 0 then v, i = varint(s, i)
+            elseif w == 1 then v = s:sub(i, i + 7); i = i + 8
+            elseif w == 5 then v = s:sub(i, i + 3); i = i + 4
+            elseif w == 2 then local n; n, i = varint(s, i); v = s:sub(i, i + n - 1); i = i + n
+            else error("wire " .. w) end
+            out[#out + 1] = { f, w, v }
+        end
+        return out
+    end
+    local function pbBuild(list)
+        local out = {}
+        for _, x in ipairs(list) do
+            local f, w, v = x[1], x[2], x[3]
+            out[#out + 1] = encVarint(f * 8 + w)
+            if w == 0 then out[#out + 1] = encVarint(v)
+            elseif w == 2 then out[#out + 1] = encVarint(#v) .. v
+            else out[#out + 1] = v end
+        end
+        return table.concat(out)
+    end
+
+    -- One preset's generator record (hex) -> the same record at `rate`, starting at `start` seconds.
+    local function newGenerator(hex, rate, start)
+        local b = hex2bin(hex)
+        local flag = b:byte(9)
+        local raw
+        if flag == 0x80 then raw = b:sub(10)
+        elseif flag == 0x81 and KNOWN[hex:lower()] then raw = hex2bin(KNOWN[hex:lower()])
+        else return nil end
+        local fields = pbParse(raw)
+        local seen3, seen4 = false, false
+        for _, x in ipairs(fields) do
+            if x[1] == 3 then x[3] = pbBuild({ { 1, 1, packDouble(rate) } }); seen3 = true end
+            if x[1] == 4 and x[2] == 1 then x[3] = packDouble(start); seen4 = true end
+        end
+        if not (seen3 and seen4) then return nil end      -- not an adjustment-clip preset (titles...)
+        raw = pbBuild(fields)
+        local out = b:sub(1, 4) .. be32(#raw + 1) .. string.char(0x80) .. raw
+        local h = bin2hex(out)
+        return hex:match("%u") and h:upper() or h
+    end
+
+    -- The comp record: FusionStartFrameOffset (a 4-byte int in Resolve's QVariantMap) -> value.
+    local OFFKEY = bin2hex(("FusionStartFrameOffset"):gsub(".", "\0%0"))
+    local function newComp(hex, value)
+        local lower = hex:lower()
+        local k = lower:find(OFFKEY, 1, true)
+        if not k then return nil end
+        local p = k + #OFFKEY                            -- type (4 bytes), null flag (1), value (4)
+        local typ = lower:sub(p, p + 7)
+        if typ ~= "00000002" and typ ~= "00000003" then return nil end
+        if value < 0 then value = value + 4294967296 end
+        local v = bin2hex(be32(value))
+        if hex:match("%u") then v = v:upper() end
+        return hex:sub(1, p + 9) .. v .. hex:sub(p + 18)
+    end
+
+    -- Rewrites one MpFolder.xml; returns new text and the number of presets changed (nil on error).
+    function R.rewriteXml(text, tag)
+        local rate = EXACT[tag] or tonumber(tag)
+        local base = math.floor(3600 * rate + 1e-6)          -- what Resolve uses: 86313 at 23.976, 107892 at 29.97
+        local start = (base + 0.25) / rate                   -- +0.25 frame: In lands on base whether Resolve floors or rounds
+        local out, pos, changed = {}, 1, 0
+        while true do
+            local g = text:find("<Sm2MpGenerator ", pos, true)
+            if not g then break end
+            local nextG = text:find("<Sm2MpGenerator ", g + 1, true) or (#text + 1)
+            local a1 = text:find("<FieldsBlob>", g, true)
+            local a2 = a1 and text:find("</FieldsBlob>", a1, true)
+            local c0 = a2 and text:find("<Sm2TiCompositionTable", a2, true)
+            local c1 = c0 and text:find("<FieldsBlob>", c0, true)
+            local c2 = c1 and text:find("</FieldsBlob>", c1, true)
+            if not (a2 and c2) or c2 > nextG then
+                out[#out + 1] = text:sub(pos, nextG - 1); pos = nextG
+            else
+                local gen = newGenerator(text:sub(a1 + 12, a2 - 1), rate, start)
+                local comp = gen and newComp(text:sub(c1 + 12, c2 - 1), -base)
+                if gen and comp then
+                    out[#out + 1] = text:sub(pos, a1 + 11) .. gen .. text:sub(a2, c1 + 11) .. comp
+                    pos = c2; changed = changed + 1
+                else
+                    out[#out + 1] = text:sub(pos, nextG - 1); pos = nextG
+                end
+            end
+        end
+        out[#out + 1] = text:sub(pos)
+        return table.concat(out), changed
+    end
+
+    -- Runs a command and waits for it; on Windows without a console window.
+    local function run(cmd)
+        if not isWin then
+            local r = os.execute(cmd .. " >/dev/null 2>&1")
+            return r == 0 or r == true
+        end
+        local ok, res = pcall(function()
+            local ffi = require("ffi")
+            pcall(ffi.cdef, [[
+                int __stdcall CreateProcessW(const uint16_t*, uint16_t*, void*, void*, int, unsigned long, void*, const uint16_t*, void*, void*);
+                unsigned long __stdcall WaitForSingleObject(void*, unsigned long);
+                int __stdcall GetExitCodeProcess(void*, unsigned long*);
+                int __stdcall CloseHandle(void*);
+            ]])
+            pcall(ffi.cdef, [[ int __stdcall MultiByteToWideChar(unsigned int, unsigned long, const char*, int, uint16_t*, int); ]])
+            local k = ffi.load("kernel32")
+            local n = k.MultiByteToWideChar(65001, 0, cmd, -1, nil, 0)
+            local w = ffi.new("uint16_t[?]", n); k.MultiByteToWideChar(65001, 0, cmd, -1, w, n)
+            local si = ffi.new("uint8_t[104]"); ffi.cast("uint32_t*", si)[0] = 104
+            local pi = ffi.new("void*[3]")
+            if k.CreateProcessW(nil, w, nil, nil, 0, 0x08000000, nil, nil, si, pi) == 0 then return false end
+            k.WaitForSingleObject(pi[0], 120000)
+            local code = ffi.new("unsigned long[1]"); k.GetExitCodeProcess(pi[0], code)
+            k.CloseHandle(pi[0]); k.CloseHandle(pi[1])
+            return code[0] == 0
+        end)
+        return ok and res
+    end
+    -- Windows: double quotes, backslashes. macOS: single quotes (safe for spaces, [ ], $ and quotes).
+    local function q(p)
+        if isWin then return '"' .. p:gsub("/", "\\") .. '"' end
+        return "'" .. p:gsub("'", "'\\''") .. "'"
+    end
+    local TAR = isWin and (os.getenv("SystemRoot") or "C:\\Windows") .. "\\System32\\tar.exe" or "tar"
+    local function mkdir(p)
+        if isWin then return run('cmd.exe /c mkdir ' .. q(p)) or fileExists(p .. "/.") end
+        return run("mkdir -p " .. q(p))
+    end
+    local function rmtree(p)
+        if isWin then run('cmd.exe /c rmdir /s /q ' .. q(p)) else run("rm -rf " .. q(p)) end
+    end
+
+    -- Builds Packs/<pack>/Generated/presets_<tag>_<stamp>_r1.drb from presets.drb. Returns its path or nil.
+    local function build(pack, tag, out)
+        local gen = pack.dir .. "/Generated"
+        local tmp = gen .. "/tmp_" .. tag:gsub("%.", "_")
+        local log = { os.date("%Y-%m-%d %H:%M:%S") .. "  " .. pack.id .. " @" .. tag .. "  tar=" .. TAR }
+        local function note(s) log[#log + 1] = s; writeAll(gen .. "/build_log_" .. tag .. ".txt", table.concat(log, "\n") .. "\n") end
+        rmtree(tmp); mkdir(tmp)
+        local okX = run(q(TAR) .. " -xf " .. q(pack.drbPath) .. " -C " .. q(tmp))
+        note("extract " .. tostring(okX))
+        if not okX then rmtree(tmp); return nil end
+        local list = tmp .. "/.files"
+        -- the bin's folder XMLs: listed by tar itself (no directory walking in plain Lua)
+        local okList
+        if isWin then
+            -- /s + one outer pair of quotes: cmd keeps the inner quoted paths intact
+            okList = run('cmd.exe /s /c "' .. q(TAR) .. ' -tf ' .. q(pack.drbPath) .. ' > ' .. q(list) .. '"')
+        else   -- not run(): its own >/dev/null would swallow the listing
+            local r = os.execute(q(TAR) .. " -tf " .. q(pack.drbPath) .. " > " .. q(list) .. " 2>/dev/null")
+            okList = (r == 0 or r == true)
+        end
+        local names = okList and readAll(list)
+        os.remove(list)
+        note("list " .. tostring(okList) .. " entries " .. (names and select(2, names:gsub("\n", "")) or 0))
+        if not names then rmtree(tmp); return nil end
+        local total, tops = 0, {}
+        for name in names:gmatch("[^\r\n]+") do
+            local top = name:match("^([^/]+)")
+            if top and not tops[top] then tops[top] = true; tops[#tops + 1] = top end
+            if name:match("MpFolder%.xml$") then
+                local path = tmp .. "/" .. name
+                local text = readAll(path)
+                if not text then rmtree(tmp); return nil end
+                local new, n = R.rewriteXml(text, tag)
+                if not new or not writeAll(path, new) then rmtree(tmp); return nil end
+                total = total + n
+            end
+        end
+        note("presets rewritten " .. total)
+        if total == 0 then rmtree(tmp); return nil end
+        os.remove(out)
+        local args = {}
+        for _, t in ipairs(tops) do args[#args + 1] = q(t) end
+        local ok = run(q(TAR) .. " --format zip -cf " .. q(out) .. " -C " .. q(tmp) .. " " .. table.concat(args, " "))
+        rmtree(tmp)
+        note("zip " .. tostring(ok) .. " exists " .. tostring(fileExists(out)))
+        if not ok or not fileExists(out) then os.remove(out); return nil end
+        return out, total
+    end
+
+    -- The presets file for this pack at this rate: shipped presets_<tag>.drb, or the built copy.
+    function R.path(pack, tag)
+        if not tag then return nil end
+        local key = pack.id .. "@" .. tag
+        if R.failed[key] then return nil end
+        for _, e in ipairs(pack.effects or {}) do          -- titles / overlays: not adjustment-clip presets
+            if e.place then R.failed[key] = true; return nil end
+        end
+        local mark = pack.dir .. "/Generated/failed_" .. tag .. "_" .. (pack.presets or "x") .. "_" .. R.VERSION .. ".txt"
+        if fileExists(mark) then R.failed[key] = true; return nil end
+        local shipped = pack.dir .. "/presets_" .. tag .. ".drb"
+        if fileExists(shipped) then return shipped end
+        if not fileExists(pack.drbPath) then R.failed[key] = true; return nil end
+        local out = pack.dir .. "/Generated/presets_" .. tag .. "_" .. (pack.presets or "x") .. "_" .. R.VERSION .. ".drb"
+        if fileExists(out) then return out end
+        mkdir(pack.dir .. "/Generated")
+        local ok, res = pcall(build, pack, tag, out)
+        if ok and res then return res end
+        R.failed[key] = true
+        writeAll(mark, tostring(res))                       -- don't retry every session (a new VERSION retries)
+        return nil
+    end
+end
+
 function Bins.hub(mp, create)
     local root = mp:GetRootFolder()
     local f = childFolder(root, Bins.HUB)
@@ -734,8 +1016,11 @@ end
 -- A pack whose pack.txt carries "presets = <stamp>" is imported into its own
 -- sub-bin per stamp, so an updated presets.drb comes in fresh; older sub-bins stay
 -- put for clips already on timelines.
-local function stampFolderName(pack)
-    return (pack.presets and pack.presets ~= "") and ("Presets " .. pack.presets) or nil
+-- With a rate tag (see Bins.rateTag) that rate's copy gets its own sub-bin: "Presets <stamp> @29.97fps".
+local function stampFolderName(pack, tag)
+    local name = (pack.presets and pack.presets ~= "") and ("Presets " .. pack.presets) or nil
+    if tag then name = (name or "Presets") .. " @" .. tag .. "fps " .. Bins.Rate.VERSION end
+    return name
 end
 
 -- Every clip under each pack's bin, by lower-cased name. Pack bins are indexed
@@ -747,7 +1032,7 @@ local stalePacks = {}      -- pack ids whose bin is in the project but not their
 
 local function refreshPresets()
     presetIndex, stalePacks = {}, {}
-    local _, proj = currentTimeline()
+    local tl, proj = currentTimeline()
     if not proj then return presetIndex end
     local root = proj:GetMediaPool():GetRootFolder()
     local function collect(folder, generatorsOnly)
@@ -763,12 +1048,14 @@ local function refreshPresets()
     local mp = proj:GetMediaPool()
     for _, pack in ipairs(PACKS) do
         local folders = Bins.folders(mp, pack)
-        local stamp = stampFolderName(pack)
+        local stamp = stampFolderName(pack, tl and Bins.rateTag(tl, pack))
         local current
         for _, f in ipairs(folders) do current = current or (stamp and childFolder(f, stamp)) end
         if current then collect(current, false) end
         for _, f in ipairs(folders) do collect(f, false) end
-        if #folders > 0 and stamp and not current then stalePacks[pack.id] = true end
+        -- No bin of the current stamp (and rate) yet: import it, even when same-named presets sit
+        -- elsewhere in the pool (an old Power Bin import), so the fixed presets are always used.
+        if stamp and not current then stalePacks[pack.id] = true end
     end
     collect(root, true)
     return presetIndex
@@ -789,7 +1076,11 @@ local function importPacks(proj, only)
         end
         if #needed > 0 then
             local existing = Bins.pack(mp, pack, false)
-            local stamp = stampFolderName(pack)
+            local tl = proj:GetCurrentTimeline()
+            local tag = tl and Bins.rateTag(tl, pack)
+            local drbPath = tag and Bins.Rate.path(pack, tag)
+            if not drbPath then tag, drbPath = nil, pack.drbPath end   -- could not be made: presets.drb as before
+            local stamp = stampFolderName(pack, tag)
             local target = existing
             if existing and stamp then target = childFolder(existing, stamp) end
             local have = {}
@@ -803,12 +1094,12 @@ local function importPacks(proj, only)
             local complete = true
             for _, n in ipairs(needed) do if not have[n] then complete = false end end
             if not complete then
-                if not fileExists(pack.drbPath) then
+                if not fileExists(drbPath) then
                     messages[#messages + 1] = pack.name .. ": presets file missing, reinstall the pack"
                 else
                     local dest = existing or Bins.pack(mp, pack, true)
                     if dest and stamp then dest = target or mp:AddSubFolder(dest, stamp) end
-                    if dest and mp:SetCurrentFolder(dest) and mp:ImportFolderFromFile(pack.drbPath) then
+                    if dest and mp:SetCurrentFolder(dest) and mp:ImportFolderFromFile(drbPath) then
                         imported = true
                         messages[#messages + 1] = pack.name .. " ready"
                     else
@@ -1325,7 +1616,8 @@ local function applyEffect(effect, targetsOverride)
     local playhead = tl:GetCurrentTimecode()
     -- A Pre runs out exactly where the clip starts; a Post starts at its head.
     local isPre = (effect.cat == "PRE")
-    local key  = effect.name:lower()
+    -- per timeline rate: the same preset lands at another length on a 29.97 timeline
+    local key  = effect.name:lower() .. "@" .. tostring(effect.pack and Bins.rateTag(tl, effect.pack) or "")
     local full = (natural and natural > 0) and natural or nil
     local function lengthOf(item) return math.floor(item:GetEnd()) - math.floor(item:GetStart()) end
 

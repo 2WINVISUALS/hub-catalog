@@ -1,6 +1,5 @@
-version = 1.8.1
+version = 1.9.0
 file = hub.lua
-sha256 = 4d9ef293c1696df7332932090a2e1a835cf438b15917a3a47d37b12e88d5c685
-notes = New: snap the Hub left or right beside your viewer with the icons at the top right
-notes = New: UNDO button removes the effect you just placed
-notes = Faster, more accurate placement on the cut under your playhead
+sha256 = d53782f495dfae5884e7a6deea07f9f38b575523484fb9230bc80774807ecbdb
+notes = Fix: effects no longer freeze the footage after you duplicate, move or tweak them (any frame rate)
+notes = Effects now match your timeline's frame rate automatically
