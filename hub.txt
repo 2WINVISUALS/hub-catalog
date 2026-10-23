@@ -1,6 +1,8 @@
-version = 1.9.2
+version = 1.9.4
 file = hub.lua
-sha256 = eea3fe85b4a51462814e99673f30698f3beb906a93a9f7846b00f46f56dd4779
-notes = Fix: MV Motion Blur Pre / Post no longer fail with "could not fit" on 29.97, 59.94 and other frame rates
-notes = Fix: MV Motion Blur Pre / Post placed from the Hub play the shot again
+sha256 = 535a7a75ed9ddcc9d8a63403788422b55a607ebc92d8f341872e41552c404573
+notes = Stretch MV Motion Blur Pre / Post by hand: drag the Pre's left edge or the Post's right edge, the footage stays in sync and the blur ramp stretches along
+notes = Fix: MV Motion Blur Pre can be placed next to a Post at the same cut
+notes = MV Motion Blur Pre / Post from the Hub now cover up to 15 frames at the cut and leave your clip on underneath (faster renders on long shots)
+notes = Fix: MV Motion Blur Pre / Post work on 29.97, 59.94 and every other frame rate
 notes = Effects match your timeline's frame rate automatically (no frozen footage after duplicate, move or tweak)
