@@ -1,5 +1,6 @@
-version = 1.9.1
+version = 1.9.2
 file = hub.lua
-sha256 = ab845d5153844d780f8736266b65bb7af69b6c40a5255b29bdc49d42e9c28418
-notes = Fix: MV Motion Blur Pre / Post placed from the Hub play the shot again (they showed "No frame available")
+sha256 = eea3fe85b4a51462814e99673f30698f3beb906a93a9f7846b00f46f56dd4779
+notes = Fix: MV Motion Blur Pre / Post no longer fail with "could not fit" on 29.97, 59.94 and other frame rates
+notes = Fix: MV Motion Blur Pre / Post placed from the Hub play the shot again
 notes = Effects match your timeline's frame rate automatically (no frozen footage after duplicate, move or tweak)

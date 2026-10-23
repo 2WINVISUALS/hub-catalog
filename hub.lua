@@ -38,7 +38,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.9.1"
+local HUB_VERSION = "1.9.2"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -1726,6 +1726,50 @@ function Bins.copySource(tl, proj, shot, track, s, bin)
     return src
 end
 
+-- A carrier preset is 23.976 media, so on a timeline at another rate only some lengths exist (29.97: never 4, 9,
+-- 14...; 59.94: about 2 in 5). Finds the longest placement that fits in n frames (place, measure, adjust) and places
+-- it against the cut: from s for a Post, ending at s + n for a Pre (atEnd). Returns the item and its length, or nil
+-- and why. A placement shorter than n leaves the shot's far frame(s) to the original under it.
+function Bins.fitPlace(tl, mp, preset, dest, s, n, atEnd)
+    local got, best = {}, nil
+    local function measure(r)
+        if got[r] == nil then
+            local item = place(mp, preset, dest, s, r)
+            if not item then return nil end
+            got[r] = math.floor(item:GetEnd()) - math.floor(item:GetStart())
+            tl:DeleteClips({ item }, false)
+        end
+        return got[r]
+    end
+    local r = n
+    local g = measure(r)
+    if not g then return nil, "Resolve refused to place the clip" end
+    if g ~= n then r = math.max(1, math.floor(r * n / math.max(g, 1) + 0.5)) end
+    for _ = 1, 8 do
+        g = measure(r)
+        if not g then return nil, "Resolve refused to place the clip" end
+        if g <= n and (not best or g > got[best]) then best = r end
+        if g == n then break end
+        if g > n then
+            if r == 1 or (got[r - 1] and got[r - 1] <= n) then break end
+            r = r - 1
+        else
+            if got[r + 1] and got[r + 1] > n then break end
+            r = r + 1
+        end
+    end
+    if not best then return nil end
+    local len = got[best]
+    local at = atEnd and (s + n - len) or s
+    local item = place(mp, preset, dest, at, best)
+    if not item then return nil, "Resolve refused to place the clip" end
+    if math.floor(item:GetStart()) ~= at or math.floor(item:GetEnd()) - math.floor(item:GetStart()) ~= len then
+        tl:DeleteClips({ item }, false)
+        return nil
+    end
+    return item, len
+end
+
 function Bins.copyFx(effect, targetsOverride)
     local tl, proj = currentTimeline()
     if not tl then return "No timeline is open." end
@@ -1748,7 +1792,7 @@ function Bins.copyFx(effect, targetsOverride)
     local mp = proj:GetMediaPool()
     local isPre = (effect.cat == "PRE")
     local label = displayName(effect.name)
-    local placed, failed = 0, nil
+    local placed, failed, short = 0, nil, false
     -- one placement per press, decided by the playhead (highlighted clips are ignored, like the MV transitions)
     local ph = playheadFrame(tl)
     local one, oneTrack
@@ -1796,25 +1840,21 @@ function Bins.copyFx(effect, targetsOverride)
             local src, why = Bins.copySource(tl, proj, shot, track, s, Bins.packSub(mp, effect.pack, "Sources"))
             local dest = src and destinationTrack(tl, track, s, e)
             if src and not dest then why = "could not free up a track above" end
-            -- the carrier's length counts at its own rate (made at 23.976): place, measure, re-place (as Bins.carrier)
-            local item, request = nil, n
-            for _ = 1, 3 do
-                if not dest then break end
-                item = place(mp, preset, dest, s, request)
-                if not item then why = "Resolve refused to place the clip" break end
-                local got = math.floor(item:GetEnd()) - math.floor(item:GetStart())
-                if got == n and math.floor(item:GetStart()) == s then break end
-                tl:DeleteClips({ item }, false); item = nil
-                why = "could not fit " .. label .. " to the clip"
-                request = math.max(1, math.floor(request * n / math.max(got, 1) + 0.5))
+            -- the carrier's length counts at its own rate (made at 23.976): Bins.fitPlace finds the longest that fits
+            local item, len = nil, n
+            if dest then
+                item, len = Bins.fitPlace(tl, mp, preset, dest, s, n, isPre)
+                if not item then why = len or ("could not fit " .. label .. " to the clip") end
             end
             local comp = item and item:GetFusionCompByIndex(1)
             local fed = false
             if comp then
                 local mi, mo = comp:AddTool("MediaIn", -100, 0), comp:FindTool("MediaOut1")
                 if mi and mo then
+                    -- a Pre a frame or two short starts that far into the shot
+                    local first = isPre and (n - len) or 0
                     mi:SetInput("MediaID", src:GetMediaId())
-                    mi:SetInput("ClipTimeStart", 0); mi:SetInput("ClipTimeEnd", n - 1)
+                    mi:SetInput("ClipTimeStart", first); mi:SetInput("ClipTimeEnd", first + len - 1)
                     fed = mo:ConnectInput("Input", mi) and true or false
                 end
             end
@@ -1825,9 +1865,10 @@ function Bins.copyFx(effect, targetsOverride)
             if item then
                 nameClip(item, effect.name)
                 Bins.J.addClip(item, label)
-                -- the original under it is switched off (decoded once; UNDO switches it back on)
-                if shot:GetClipEnabled() then shot:SetClipEnabled(false); Bins.J.addEnable(shot, label) end
-                placed = placed + 1
+                -- the original under it is switched off (decoded once; UNDO switches it back on), unless the carrier
+                -- came out short and the original has to show the frame(s) it leaves
+                if len == n and shot:GetClipEnabled() then shot:SetClipEnabled(false); Bins.J.addEnable(shot, label) end
+                placed = placed + 1; short = short or len < n
             else
                 failed = why or "unknown error"
             end
@@ -1835,7 +1876,9 @@ function Bins.copyFx(effect, targetsOverride)
     end
     if playhead then tl:SetCurrentTimecode(playhead) end
     if placed == 0 then return "Failed: " .. (failed or "unknown error") end
-    local msg = label .. " -> placed over " .. placed .. " clip" .. (placed == 1 and "" or "s") .. " (original switched off, UNDO brings it back)"
+    local msg = label .. " -> placed over " .. placed .. " clip" .. (placed == 1 and "" or "s")
+        .. (short and " (a frame or two short of the clip: this frame rate allows no exact fit; the original shows there)"
+            or " (original switched off, UNDO brings it back)")
     if failed then msg = msg .. "  (" .. (#targets - placed) .. " failed: " .. failed .. ")" end
     return msg
 end
