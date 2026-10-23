@@ -1,5 +1,5 @@
-version = 1.9.0
+version = 1.9.1
 file = hub.lua
-sha256 = d53782f495dfae5884e7a6deea07f9f38b575523484fb9230bc80774807ecbdb
-notes = Fix: effects no longer freeze the footage after you duplicate, move or tweak them (any frame rate)
-notes = Effects now match your timeline's frame rate automatically
+sha256 = ab845d5153844d780f8736266b65bb7af69b6c40a5255b29bdc49d42e9c28418
+notes = Fix: MV Motion Blur Pre / Post placed from the Hub play the shot again (they showed "No frame available")
+notes = Effects match your timeline's frame rate automatically (no frozen footage after duplicate, move or tweak)

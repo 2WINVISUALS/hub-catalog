@@ -29,15 +29,16 @@
 
     Effect kinds: preset (default; a clip of that name in the pack's bin:
     adjustment clips, Fusion titles, generators), clip (duplicates the shot
-    and applies Packs/<id>/ClipFX/<name>.setting), media (imports the file
-    and lays it on the track above).
+    and applies Packs/<id>/ClipFX/<name>.setting), carrier (a Fusion
+    Generator preset holding the effect's macro, laid over the shot and fed the
+    shot's whole file), media (imports the file and lays it on the track above).
 
     Run from:  Workspace > Scripts > Utility > VFX HUB
     (that script is a small launcher; this file is 2WIN VFX Hub/Core/hub.lua)
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.9.0"
+local HUB_VERSION = "1.9.1"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -601,6 +602,12 @@ local function buildCatalogue()
                 if e.kind == "clip" then
                     effect.clip = true
                     effect.setting = pack.dir .. "/ClipFX/" .. e.name .. ".setting"
+                    -- "clip | direct": Pre/Post go on the clip itself, never on a duplicate
+                    effect.onClip = (e.extra or ""):lower():match("^%s*direct%s*$") ~= nil
+                elseif e.kind == "copy" then
+                    effect.clip, effect.copyfx = true, true   -- carrier over a copy of the shot (Bins.copyFx)
+                elseif e.kind == "carrier" then
+                    effect.clip, effect.carrier = true, true
                 elseif e.kind == "media" then
                     local rel = e.extra or ""
                     local okPath = rel ~= "" and not rel:find("%.%.") and not rel:find("^[/\\]") and not rel:find(":")
@@ -708,6 +715,8 @@ function Bins.rateTag(tl, pack)
     local ok, v = pcall(function() return tl:GetSetting("timelineFrameRate") end)
     local fps = ok and tonumber(tostring(v or ""):match("[%d%.]+"))
     if not fps then return nil end
+    -- carriers are Fusion Compositions, not adjustment clips: one presets.drb at every rate
+    for _, e in ipairs(pack and pack.effects or {}) do if e.kind == "carrier" or e.kind == "copy" then return nil end end
     for _, tag in ipairs(Bins.RATES) do
         if math.abs(fps - tonumber(tag)) < 0.01 then
             if pack and Bins.Rate.failed[pack.id .. "@" .. tag] then return nil end
@@ -1072,7 +1081,7 @@ local function importPacks(proj, only)
       if not only or pack.id == only.id then
         local needed = {}
         for _, e in ipairs(pack.effects) do
-            if e.kind == "preset" then needed[#needed + 1] = e.name:lower() end
+            if e.kind == "preset" or e.kind == "carrier" or e.kind == "copy" then needed[#needed + 1] = e.name:lower() end
         end
         if #needed > 0 then
             local existing = Bins.pack(mp, pack, false)
@@ -1232,8 +1241,11 @@ local function findTarget(tl, preferPlayhead)
     -- each one, so a highlighted Pre + Post pair placed the effect on two shots.)
     local picks = {}
     -- ipairs, not pairs: Resolve's Lua lists carry an extra "__flags" key.
-    local sel = tl:GetSelectedClips()
-    if sel then for _, c in ipairs(sel) do if not isGenerator(c) then picks[#picks + 1] = c end end end
+    -- Timeline.GetSelectedClips only exists from Resolve 21.0.4: on older versions (20.x, 19) the
+    -- call itself errors ("attempt to call method 'GetSelectedClips' (a nil value)"), so it is
+    -- guarded and those versions fall through to the clip under the playhead below.
+    local okSel, sel = pcall(function() return tl:GetSelectedClips() end)
+    if okSel and sel then for _, c in ipairs(sel) do if not isGenerator(c) then picks[#picks + 1] = c end end end
     -- Resolve auto-selects one half of a fresh split, usually the LEFT piece, whose head is
     -- the PREVIOUS cut. For transitions and overlays the playhead decides: a single selected
     -- clip that does not contain the playhead, while the playhead sits on a cut, is that
@@ -1326,9 +1338,14 @@ local function angleSource(tl, proj, shot, track)
     if not twin then return nil, nil, "could not duplicate the timeline to flatten" end
     local s = math.floor(shot:GetStart())
     local media, left, err
+    local oldResolve = false
     for _, item in ipairs(twin:GetItemListInTrack("video", track)) do
         if math.floor(item:GetStart()) == s then
-            if item:FlattenMulticam(resolve.FLATTEN_MULTICAM_RETAIN_GRADE_FROM_ANGLE) then
+            -- TimelineItem.FlattenMulticam is new in Resolve 21.1: guarded so an older Resolve fails with
+            -- a clear message and the temp timeline below is still cleaned up.
+            local okF, flatRes = pcall(function() return item:FlattenMulticam(resolve.FLATTEN_MULTICAM_RETAIN_GRADE_FROM_ANGLE) end)
+            if not okF then oldResolve = true end
+            if okF and flatRes then
                 for _, flat in ipairs(twin:GetItemListInTrack("video", track)) do
                     if math.floor(flat:GetStart()) == s then
                         media, left = flat:GetMediaPoolItem(), flat:GetLeftOffset()
@@ -1337,7 +1354,10 @@ local function angleSource(tl, proj, shot, track)
             end
         end
     end
-    if not media then err = "could not flatten the multicam angle" end
+    if not media then
+        err = oldResolve and "Effects on multicam clips need DaVinci Resolve 21.1 or newer - please update Resolve."
+            or "could not flatten the multicam angle"
+    end
     proj:SetCurrentTimeline(tl)
     mp:DeleteTimelines({ twin })
     return media, left, err
@@ -1373,6 +1393,11 @@ function Bins.J.addComp(item, name, label)
     if ok and id then local e = Bins.J.entry(label); e.comps[#e.comps + 1] = { id = id, name = name } end
 end
 function Bins.J.count() return #Bins.J.stack end
+-- a clip an effect switched off (Bins.copyFx: the original under the MV Motion Blur clip) - UNDO switches it on
+function Bins.J.addEnable(item, label)
+    local ok, id = pcall(function() return item:GetUniqueId() end)
+    if ok and id then local e = Bins.J.entry(label); e.enables = e.enables or {}; e.enables[#e.enables + 1] = id end
+end
 
 -- Removes the newest journal entry. Returns a status line.
 function Bins.J.undo(tl)
@@ -1413,13 +1438,411 @@ function Bins.J.undo(tl)
         if done then restored = restored + 1 else gone = gone + 1 end
     end
     if #doomed > 0 then tl:DeleteClips(doomed, false) end
+    for _, id in ipairs(e.enables or {}) do
+        if byId[id] then pcall(function() byId[id]:SetClipEnabled(true) end) end
+    end
     table.remove(Bins.J.stack)
     local msg = "undid " .. (e.label or "last effect")
     if gone > 0 then msg = msg .. "  (" .. gone .. " already removed)" end
     return msg
 end
 
+-- Carrier effects (Random Edits): a retime effect has to reach frames outside the shot, but an
+-- adjustment clip has just the frame under it, and an Edit-page effect on a Fusion clip only
+-- reaches that clip's own frames. So the preset is a media-pool Fusion Generator holding the
+-- effect's macro (its controls show in the Inspector). Each placement feeds it two nested sources:
+--   1. the shot's WHOLE file as a compound clip carrying the shot's grade (Bins.reSource), so every
+--      pulled frame looks like the shot (an Edit-page effect gets its clip's grade after it);
+--   2. a snapshot of the edit itself (Bins.reSnapshot), for Pick From = Whole Timeline.
+-- The macro's hidden SourceFirst/SourceLast/SourceShift and TLFirst/TLLast/TLShift say where each
+-- sits in comp time. The shot itself is never touched.
+
+-- A sub-bin of the pack's bin for media the Hub makes (graded sources, timeline snapshots).
+function Bins.packSub(mp, pack, name)
+    local f = pack and Bins.pack(mp, pack, true)
+    return f and (childFolder(f, name) or mp:AddSubFolder(f, name))
+end
+
+-- The shot's whole file (a multicam shot: its angle's file) as a compound clip with the shot's
+-- grade, built past the timeline's end and taken off again. Returns the compound, the frame of it
+-- under the shot's head and its length (timeline frames), or nil and why.
+function Bins.reSource(tl, proj, shot, track, pack)
+    local mp = proj:GetMediaPool()
+    local mpi, left = shot:GetMediaPoolItem(), shot:GetLeftOffset()
+    if not mpi then return nil, "select a video clip (not an effect clip)" end
+    if mpi:GetClipProperty("Type") == "Multicam" then
+        local why
+        mpi, left, why = angleSource(tl, proj, shot, track)
+        if not mpi then return nil, why end
+    end
+    local frames = tonumber(mpi:GetClipProperty("Frames")) or 0
+    if frames < 1 then return nil, "the clip's media has no frames" end
+    local temp = place(mp, mpi, 1, math.floor(tl:GetEndFrame()) + 10, frames, 0)
+    if not temp then return nil, "could not lay out the clip's media" end
+    shot:CopyGrades({ temp })
+    local cc = tl:CreateCompoundClip({ temp }, { name = "Random Edits source - " .. mpi:GetName() })
+    if not cc then
+        tl:DeleteClips({ temp }, false)
+        return nil, "could not make the graded source"
+    end
+    local cmpi = cc:GetMediaPoolItem()
+    local length = math.floor(cc:GetEnd()) - math.floor(cc:GetStart())
+    tl:DeleteClips({ cc }, false)
+    if not cmpi then return nil, "could not make the graded source" end
+    local bin = Bins.packSub(mp, pack, "Graded sources")
+    if bin then mp:MoveClips({ cmpi }, bin) end
+    return cmpi, left, length
+end
+
+-- Whole Timeline: the edit as it is now (minus Random Edits carriers, so a carrier never feeds on
+-- itself) as ONE compound clip - grades, titles and adjustment clips included. A Timeline-type
+-- MediaIn comes in as layers whose video has no alpha (only titles showed through the macro); a
+-- Compound one is a flat picture. Made on a duplicate of the timeline, which is deleted again.
+-- Only the stretch of the timeline around the shot: clips joined across gaps under 10 seconds, so
+-- strays parked far down the timeline (seen: clips 38 minutes past the end of a music video) don't
+-- turn most Whole Timeline picks into empty frames. One per stretch per Hub session (reopen the Hub
+-- after a re-edit for a fresh one).
+function Bins.reStretch(tl, at)
+    local spans = {}
+    for tr = 1, tl:GetTrackCount("video") do
+        for _, it in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+            spans[#spans + 1] = { math.floor(it:GetStart()), math.floor(it:GetEnd()) }
+        end
+    end
+    table.sort(spans, function(a, b) return a[1] < b[1] end)
+    local gap = math.floor(10 * (tonumber(tl:GetSetting("timelineFrameRate")) or 24))
+    local lo, hi
+    for _, sp in ipairs(spans) do
+        if lo and sp[1] - hi > gap then
+            if at < hi then return lo, hi end
+            lo, hi = nil, nil
+        end
+        if not lo then lo, hi = sp[1], sp[2] else hi = math.max(hi, sp[2]) end
+    end
+    return lo, hi
+end
+
+Bins.reSnaps = {}
+function Bins.reSnapshot(tl, proj, pack, at)
+    local lo, hi = Bins.reStretch(tl, at)
+    if not lo then return nil end
+    local key = tl:GetUniqueId() .. "@" .. lo
+    local hit = Bins.reSnaps[key]
+    if hit then return hit[1], hit[2] end
+    local mp = proj:GetMediaPool()
+    local snap = tl:DuplicateTimeline(tl:GetName() .. " (Random Edits temp)")
+    if not snap then return nil end
+    proj:SetCurrentTimeline(snap)
+    local items = {}
+    for tr = 1, snap:GetTrackCount("video") do
+        local drop = {}
+        for _, it in ipairs(snap:GetItemListInTrack("video", tr) or {}) do
+            -- Carriers are told apart WITHOUT opening comps: loading some Fusion titles' comps by
+            -- script crashes Resolve 21.1.1 (fusionsystem.dll/lua5.1.dll, seen with MV Titles in a
+            -- duplicated timeline). A carrier is a generator (no media pool item) named after its preset.
+            local carrier = it:GetMediaPoolItem() == nil and trim(it:GetName() or "") == Bins.reName
+            local s, e = math.floor(it:GetStart()), math.floor(it:GetEnd())
+            if carrier then drop[#drop + 1] = it
+            elseif s >= lo and e <= hi then items[#items + 1] = it end
+        end
+        if #drop > 0 then snap:DeleteClips(drop, false) end
+    end
+    local cc = #items > 0 and snap:CreateCompoundClip(items, { name = tl:GetName() .. " - whole edit (Random Edits)" })
+    local cmpi = cc and cc:GetMediaPoolItem()
+    local frames = cc and (math.floor(cc:GetEnd()) - math.floor(cc:GetStart()))
+    proj:SetCurrentTimeline(tl)
+    mp:DeleteTimelines({ snap })
+    if not (cmpi and frames and frames > 0) then return nil end
+    local bin = Bins.packSub(mp, pack, "Whole edits")
+    if bin then mp:MoveClips({ cmpi }, bin) end
+    Bins.reSnaps[key] = { cmpi, frames }
+    return cmpi, frames
+end
+
+-- A MediaIn in comp, loaded with mpi from frame 0 to frames-1. A fresh MediaIn now and then keeps
+-- its host clip after the first MediaID (seen on 21.1.1): set it until the right length shows up.
+function Bins.reFeed(comp, mpi, frames, hostName, x)
+    local mi = comp:AddTool("MediaIn", false, x or -100, 0)
+    if not mi then return nil end
+    mi:SetInput("DeepOutputMode", 0)
+    local ok = false
+    for _ = 1, 3 do
+        mi:SetInput("MediaID", mpi:GetMediaId())
+        local a = mi:GetAttrs() or {}
+        ok = tonumber(a.TOOLI_Clip_Length) == frames and a.TOOLS_Clip_Name ~= hostName
+        if ok then break end
+    end
+    if not ok then return nil end
+    -- A second MediaIn in a comp picks Layer "1". Plain playback doesn't mind, but ResolveFX
+    -- Motion Blur then fetches its neighbour frames from that empty layer: dark or black frames.
+    mi:SetInput("Layer", "0")
+    mi:SetInput("ClipTimeStart", 0)
+    mi:SetInput("ClipTimeEnd", frames - 1)
+    -- motion blur (vector or frame blend) reads the frame after: at a source's last frame that would be
+    -- empty, so hold it. NOT HoldFirstFrame: that delays the whole clip by that many frames.
+    mi:SetInput("HoldLastFrame", 100000)
+    return tonumber(mi:GetInput("ClipTimeEnd")) == frames - 1 and mi or nil
+end
+
+function Bins.carrier(effect, targetsOverride)
+    local tl, proj = currentTimeline()
+    if not tl then return "No timeline is open." end
+    local preset = refreshPresets()[effect.name:lower()]
+    if not preset or (effect.pack and stalePacks[effect.pack.id]) then
+        if importPacks(proj, effect.pack) then preset = refreshPresets()[effect.name:lower()] end
+    end
+    if not preset then
+        return "Failed: no preset named '" .. effect.name .. "' - reinstall " .. (effect.pack and effect.pack.name or "the pack")
+    end
+    local targets, err = targetsOverride, nil
+    if not targets then
+        targets, err = findTarget(tl, false)
+        if not targets then return err end
+    end
+    local mp = proj:GetMediaPool()
+    local playhead = tl:GetCurrentTimecode()
+    Bins.reName = effect.name   -- carriers (left out of Whole Timeline snapshots) are known by name
+    local placed, failed = 0, nil
+    for _, t in ipairs(targets) do
+        local shot = t.item
+        local item, why
+        if not (shot and shot:GetMediaPoolItem()) then
+            why = "select a video clip (not an effect clip)"
+        else
+            local s, e = math.floor(shot:GetStart()), math.floor(shot:GetEnd())
+            local track = t.track
+            for tr = 1, tl:GetTrackCount("video") do
+                for _, other in ipairs(tl:GetItemListInTrack("video", tr)) do
+                    if other:GetUniqueId() == shot:GetUniqueId() then track = tr end
+                end
+            end
+            local src, first, frames = Bins.reSource(tl, proj, shot, track, effect.pack)
+            if not src then why = first end
+            -- the edit around this shot (a failed snapshot only disables Whole Timeline)
+            local snap, snapFrames
+            if src then snap, snapFrames = Bins.reSnapshot(tl, proj, effect.pack, s) end
+            local dest = src and destinationTrack(tl, track, s, e)
+            if src and not dest then why = "could not free up a track above" end
+            -- Placed from the shot's frame of the source, so the comp's time roughly matches the
+            -- source's frame numbers. The preset's length counts at its own rate (23.976):
+            -- place, measure, re-place.
+            local request = e - s
+            for _ = 1, 3 do
+                if not dest then break end
+                item = place(mp, preset, dest, s, request, first)
+                if not item then why = "Resolve refused to place the clip" break end
+                local got = math.floor(item:GetEnd()) - math.floor(item:GetStart())
+                if got == e - s and math.floor(item:GetStart()) == s then break end
+                tl:DeleteClips({ item }, false); item = nil
+                why = "could not fit " .. displayName(effect.name) .. " to the clip"
+                request = math.max(1, math.floor(request * (e - s) / math.max(got, 1) + 0.5))
+            end
+            local comp = item and item:GetFusionCompByIndex(1)
+            local rt = comp and comp:FindTool("RE_Time")
+            local feed, tlFeed = comp and comp:FindTool("RE_Source"), comp and comp:FindTool("RE_TLSource")
+            local macro
+            for _, tool in pairs(rt and feed and comp:GetToolList(false) or {}) do
+                if type(tool) ~= "number" and tool.ID == "MacroOperator" then macro = tool end
+            end
+            local mi = macro and Bins.reFeed(comp, src, frames, preset:GetName(), -100)
+            local fed = false
+            if mi then
+                -- A MediaIn can't start before the comp, so it sits at the comp's head (GlobalIn) and
+                -- RE_Source shifts it: comp time T shows source frame T - first0, first0 being the
+                -- comp time of source frame 0 (shot head = comp start = source frame `first`).
+                local r0 = tonumber(comp:GetAttrs().COMPN_RenderStart) or 0
+                local first0 = r0 - first
+                rt:SetInput("SourceFirst", first0)
+                rt:SetInput("SourceLast", first0 + frames - 1)
+                feed:SetInput("SourceShift", (tonumber(mi:GetInput("GlobalIn")) or r0) - first0)
+                fed = tonumber(rt:GetInput("SourceLast")) == first0 + frames - 1
+                      and macro:ConnectInput(macro:FindMainInput(1).ID, mi) and true
+                -- the snapshot sits in comp time past the source, with a gap
+                local mi2 = fed and snap and tlFeed and Bins.reFeed(comp, snap, snapFrames, preset:GetName(), -100)
+                local in2 = mi2 and macro:FindMainInput(2)
+                if in2 then
+                    local tl0 = first0 + frames + 1000
+                    rt:SetInput("TLFirst", tl0)
+                    rt:SetInput("TLLast", tl0 + snapFrames - 1)
+                    tlFeed:SetInput("TLShift", (tonumber(mi2:GetInput("GlobalIn")) or r0) - tl0)
+                    macro:ConnectInput(in2.ID, mi2)
+                    rt:SetInput("PickFrom", 2)   -- Hub default: Whole Timeline (only when its feed is there)
+                end
+            end
+            if item and not fed then
+                tl:DeleteClips({ item }, false); item = nil
+                why = "could not load the clip's media into " .. displayName(effect.name)
+            end
+        end
+        if item then
+            nameClip(item, effect.name)
+            Bins.J.addClip(item, displayName(effect.name))
+            placed = placed + 1
+        else
+            failed = why or "unknown error"
+        end
+    end
+    if playhead then tl:SetCurrentTimecode(playhead) end
+    if placed == 0 then return "Failed: " .. (failed or "unknown error") end
+    local msg = displayName(effect.name) .. " -> placed over " .. placed .. " clip"
+                .. (placed == 1 and "" or "s") .. ", original untouched"
+    if failed then msg = msg .. "  (" .. (#targets - placed) .. " failed: " .. failed .. ")" end
+    return msg
+end
+
+-- "copy" Clip FX (MV Motion Blur Pre / Post). The Hub can't put an Effects-library effect on a clip (no API), so a
+-- carrier - a media-pool Fusion Composition with the Edit-page effect on it, from presets.drb - goes on the track
+-- above the shot and plays a COPY of the shot: the timeline is duplicated in the background (the only way a script
+-- gets a copy of a clip WITH its speed ramp and grade), that copy becomes a compound clip (kept in the pack bin
+-- "Sources"), and the temp timeline is deleted. The original clip is never touched: to change its ramp, edit it and
+-- apply again (UNDO removes the carrier). Pre goes on the top shot ending at the cut, Post on the top shot starting
+-- there (effect clips and earlier MV Motion Blur clips skipped).
+function Bins.copyShot(tl, frame, isPre, skip)
+    for tr = tl:GetTrackCount("video"), 1, -1 do
+        for _, item in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+            local edge = math.floor(isPre and item:GetEnd() or item:GetStart())
+            if edge == frame and item:GetMediaPoolItem() and not skip[item:GetName() or ""] then return item, tr end
+        end
+    end
+end
+
+-- A compound of a copy of `shot` (track, start s): duplicate the timeline, wrap the twin, delete the duplicate.
+function Bins.copySource(tl, proj, shot, track, s, bin)
+    local mp = proj:GetMediaPool()
+    local twin = tl:DuplicateTimeline("VFX HUB copy (temp)")
+    if not twin then return nil, "could not copy the clip" end
+    proj:SetCurrentTimeline(twin)
+    local copy
+    for _, item in ipairs(twin:GetItemListInTrack("video", track) or {}) do
+        if math.floor(item:GetStart()) == s then copy = item end
+    end
+    if copy then pcall(function() copy:SetClipEnabled(true) end) end   -- an original switched off earlier
+    local wrapped = copy and twin:CreateCompoundClip({ copy }, { name = (shot:GetName() or "clip") .. " - MV Motion Blur source" })
+    local src = wrapped and wrapped:GetMediaPoolItem()
+    proj:SetCurrentTimeline(tl)
+    mp:DeleteTimelines({ twin })
+    if not src then return nil, "could not wrap the copy of the clip" end
+    if bin then mp:MoveClips({ src }, bin) end
+    return src
+end
+
+function Bins.copyFx(effect, targetsOverride)
+    local tl, proj = currentTimeline()
+    if not tl then return "No timeline is open." end
+    local playhead = tl:GetCurrentTimecode()   -- before the import: importing the pack's bin moves the playhead
+    local preset = refreshPresets()[effect.name:lower()]
+    if not preset or (effect.pack and stalePacks[effect.pack.id]) then
+        if importPacks(proj, effect.pack) then preset = refreshPresets()[effect.name:lower()] end
+        if playhead then tl:SetCurrentTimecode(playhead) end
+    end
+    if not preset then
+        return "Failed: no preset named '" .. effect.name .. "' - reinstall " .. (effect.pack and effect.pack.name or "the pack")
+    end
+    local targets, err = targetsOverride, nil
+    if not targets then
+        targets, err = findTarget(tl, true)
+        if not targets then return err end
+    end
+    local skip = {}   -- the pack's own clips are never a shot
+    for _, e in ipairs(effect.pack and effect.pack.effects or {}) do skip[e.name] = true end
+    local mp = proj:GetMediaPool()
+    local isPre = (effect.cat == "PRE")
+    local label = displayName(effect.name)
+    local placed, failed = 0, nil
+    -- one placement per press, decided by the playhead (highlighted clips are ignored, like the MV transitions)
+    local ph = playheadFrame(tl)
+    local one, oneTrack
+    if ph then
+        -- the cut: the playhead's own frame if a clip starts / ends there, else the NEAREST cut - a real cut (a clip
+        -- ends and another starts) wins over a plain edge (the start / end of the edit)
+        local starts, ends = {}, {}
+        for tr = 1, tl:GetTrackCount("video") do
+            for _, item in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+                if item:GetMediaPoolItem() and not skip[item:GetName() or ""] then
+                    starts[math.floor(item:GetStart())] = true; ends[math.floor(item:GetEnd())] = true
+                end
+            end
+        end
+        local cut
+        if starts[ph] or ends[ph] then cut = ph end
+        for _, realOnly in ipairs({ true, false }) do
+            if cut then break end
+            local best
+            for f in pairs(realOnly and starts or {}) do
+                if ends[f] and (not best or math.abs(f - ph) < math.abs(best - ph)) then best = f end
+            end
+            if not realOnly then
+                for _, set in ipairs({ starts, ends }) do
+                    for f in pairs(set) do if not best or math.abs(f - ph) < math.abs(best - ph) then best = f end end
+                end
+            end
+            cut = best
+        end
+        if cut then one, oneTrack = Bins.copyShot(tl, cut, isPre, skip) end
+    end
+    if one then targets = { { item = one, track = oneTrack, s = math.floor(one:GetStart()), e = math.floor(one:GetEnd()) } }
+    else targets = { targets[1] } end
+    for _, t in ipairs(targets) do
+        local shot, track = one, oneTrack
+        if not shot then shot, track = Bins.copyShot(tl, t.s, isPre, skip) end
+        if not shot and not isPre and t.item and t.item:GetMediaPoolItem() and not skip[t.item:GetName() or ""] then
+            shot, track = t.item, t.track
+        end
+        if not shot then
+            failed = isPre and "no clip ends at this cut" or "no clip starts at this cut"
+        else
+            local s, e = math.floor(shot:GetStart()), math.floor(shot:GetEnd())
+            local n = e - s
+            local src, why = Bins.copySource(tl, proj, shot, track, s, Bins.packSub(mp, effect.pack, "Sources"))
+            local dest = src and destinationTrack(tl, track, s, e)
+            if src and not dest then why = "could not free up a track above" end
+            -- the carrier's length counts at its own rate (made at 23.976): place, measure, re-place (as Bins.carrier)
+            local item, request = nil, n
+            for _ = 1, 3 do
+                if not dest then break end
+                item = place(mp, preset, dest, s, request)
+                if not item then why = "Resolve refused to place the clip" break end
+                local got = math.floor(item:GetEnd()) - math.floor(item:GetStart())
+                if got == n and math.floor(item:GetStart()) == s then break end
+                tl:DeleteClips({ item }, false); item = nil
+                why = "could not fit " .. label .. " to the clip"
+                request = math.max(1, math.floor(request * n / math.max(got, 1) + 0.5))
+            end
+            local comp = item and item:GetFusionCompByIndex(1)
+            local fed = false
+            if comp then
+                local mi, mo = comp:AddTool("MediaIn", -100, 0), comp:FindTool("MediaOut1")
+                if mi and mo then
+                    mi:SetInput("MediaID", src:GetMediaId())
+                    mi:SetInput("ClipTimeStart", 0); mi:SetInput("ClipTimeEnd", n - 1)
+                    fed = mo:ConnectInput("Input", mi) and true or false
+                end
+            end
+            if item and not fed then
+                tl:DeleteClips({ item }, false); item = nil
+                why = "could not load the clip into " .. label
+            end
+            if item then
+                nameClip(item, effect.name)
+                Bins.J.addClip(item, label)
+                -- the original under it is switched off (decoded once; UNDO switches it back on)
+                if shot:GetClipEnabled() then shot:SetClipEnabled(false); Bins.J.addEnable(shot, label) end
+                placed = placed + 1
+            else
+                failed = why or "unknown error"
+            end
+        end
+    end
+    if playhead then tl:SetCurrentTimecode(playhead) end
+    if placed == 0 then return "Failed: " .. (failed or "unknown error") end
+    local msg = label .. " -> placed over " .. placed .. " clip" .. (placed == 1 and "" or "s") .. " (original switched off, UNDO brings it back)"
+    if failed then msg = msg .. "  (" .. (#targets - placed) .. " failed: " .. failed .. ")" end
+    return msg
+end
+
 local function applyClipEffect(effect, targetsOverride)
+    if effect.carrier then return Bins.carrier(effect, targetsOverride) end
+    if effect.copyfx then return Bins.copyFx(effect, targetsOverride) end
     local tl, proj = currentTimeline()
     if not tl then return "No timeline is open." end
     if not fileExists(effect.setting) then return "Failed: " .. effect.name .. " is missing from its pack" end
@@ -1433,12 +1856,30 @@ local function applyClipEffect(effect, targetsOverride)
     local isPre = (effect.cat == "PRE")
     local placed, failed = 0, nil
     -- effect.direct: the comp goes straight onto the selected clip, no duplicate.
+    -- effect.onClip (pack "clip | direct") does the same for PRE / POST: Pre on the shot that ends at the cut,
+    -- Post on the one that starts there - the clip keeps its grade and stays under any adjustment clips.
     -- A comp that fails to load is removed again; the clip itself is never deleted.
-    if effect.direct then
+    local onClipPP = effect.onClip and (effect.cat == "PRE" or effect.cat == "POST")
+    if effect.direct or onClipPP then
+        -- onClipTop: the highest footage clip with a cut at the frame (Post: starts there, Pre: ends there);
+        -- adjustment / effect clips have no media pool item and are skipped
+        local function onClipTop(frame)
+            for tr = tl:GetTrackCount("video"), 1, -1 do
+                for _, item in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+                    local edge = math.floor(isPre and item:GetEnd() or item:GetStart())
+                    if edge == frame and item:GetMediaPoolItem() then return item end
+                end
+            end
+        end
         for _, t in ipairs(targets) do
             local shot = t.item
+            if onClipPP then
+                local ph = playheadFrame(tl)
+                shot = (ph and onClipTop(ph)) or onClipTop(t.s)
+                if not shot and not isPre then shot = t.item end
+            end
             if not (shot and shot:GetMediaPoolItem()) then
-                failed = "select a video clip (not an effect clip)"
+                failed = (onClipPP and isPre) and "no shot ends at this cut" or "select a video clip (not an effect clip)"
             else
                 local before = {}
                 for _, n in ipairs(shot:GetFusionCompNameList() or {}) do before[n] = true end
@@ -2185,6 +2626,7 @@ local APPLY_SETS = {
     lyric   = { { "AT CLIP START", "START" }, { "AT PLAYHEAD", "PLAYHEAD" }, { "FIT TO CLIP", "FIT" } },
     overlay = { { "AT CLIP START", "START" }, { "ON CUT", "ONCUT" }, { "FULL CLIP", "FULL" } },
     clip    = { { "DUPLICATE + APPLY", "DUPLICATE" }, { "APPLY TO CLIP", "DIRECT" } },
+    carrier = { { "APPLY ABOVE CLIP", "DUPLICATE" } },   -- always a new clip over the shot
 }
 local APPLY_SLOTS = { "ApplyPre", "ApplyBoth", "ApplyPost" }
 local applyActions = { "PRE", "BOTH", "POST" }
@@ -2192,6 +2634,7 @@ local applyActions = { "PRE", "BOTH", "POST" }
 local function placementMode(group)
     if group then
         if group.pre or group.post then return "prepost" end
+        if group.only and group.only.carrier then return "carrier" end
         if group.only and group.only.clip then return "clip" end
         local sec = sectionOf(group.type)
         if sec == "TEXT" then return LYRIC_CATS[group.type] and "lyric" or "text" end
