@@ -38,7 +38,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.9.4"
+local HUB_VERSION = "1.9.5"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -1882,6 +1882,14 @@ function Bins.copyFx(effect, targetsOverride)
                         else
                             out = nil
                         end
+                    end
+                    -- past the shot's last frame (a Post pulled beyond its shot) the carrier turns transparent, so the
+                    -- next shot under it shows instead of a held frame (the hold stays for motion blur to read)
+                    local bg, dv = out and comp:AddTool("Background", false, -50, 1), out and comp:AddTool("Dissolve", false, 0, 1)
+                    if bg and dv and dv:ConnectInput("Background", out) and dv:ConnectInput("Foreground", bg) then
+                        bg:SetInput("TopLeftAlpha", 0)
+                        dv.Mix:SetExpression("iif(time > " .. (n - 1) .. ", 1, 0)")
+                        if tonumber(dv:GetInput("Mix", n)) == 1 and tonumber(dv:GetInput("Mix", n - 1)) == 0 then out = dv end
                     end
                     fed = out and tonumber(mi:GetInput("ClipTimeEnd")) == n - 1 and mo:ConnectInput("Input", out) and true or false
                 end
