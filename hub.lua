@@ -38,7 +38,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.9.6"
+local HUB_VERSION = "1.9.7"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -2646,6 +2646,10 @@ local rootGroup = { ID = "root", Spacing = 6, Weight = 1,
                   StyleSheet = "color:#FFFFFF;font-weight:700;letter-spacing:1px;", Text = "" },
         ui:Button{ ID = "UpdateBarGo", Text = "UPDATE", Weight = 0, MinimumSize = { 120, 32 } },
     },
+    -- shown only when this Resolve can't place effects (older than 21.1, or the free version): why + what to do
+    ui:Label{ ID = "ResolveWarn", Weight = 0, Hidden = true, WordWrap = true, MinimumSize = { 0, 48 },
+              Alignment = { AlignHCenter = true, AlignVCenter = true },
+              StyleSheet = "color:#FFFFFF;font-weight:700;background:" .. RED_DIM .. ";padding:6px;", Text = "" },
     ui:HGroup(Bins.L.row),
     ui:HGroup(tabRow),
     effectsSection,
@@ -3333,9 +3337,26 @@ end
 win.On.List.CurrentItemChanged = guard(selectRow)
 win.On.List.ItemClicked        = guard(selectRow)
 
+-- The Hub needs DaVinci Resolve Studio 21.1 or newer (older versions lack API calls it uses; the free version
+-- can't place the effects). Returns what to tell the customer, or nil when this Resolve is fine.
+function Bins.resolveProblem(product, version)
+    product, version = tostring(product or ""), tostring(version or "")
+    if product ~= "" and not product:find("Studio", 1, true) then
+        return "You're using the free version of DaVinci Resolve. VFX HUB needs DaVinci Resolve Studio.\n"
+            .. "Every effect still works: drag it from Effects > 2WINVISUALS on the Edit page."
+    end
+    local major, minor = version:match("^(%d+)%.(%d+)")
+    major, minor = tonumber(major), tonumber(minor)
+    if major and (major < 21 or (major == 21 and minor < 1)) then
+        return "You're using DaVinci Resolve " .. version:match("^%d+%.%d+[%.%d]*") .. ". VFX HUB needs Resolve 21.1 or newer.\n"
+            .. "Update DaVinci Resolve (free update from blackmagicdesign.com), then open the Hub again."
+    end
+end
+
 local function apply(which)
     if not selectedGroup then itm.Status.Text = "pick an effect first" return end
     itm.Status.Text = applyGroup(selectedGroup, which)
+    if Bins.resolveWarn then itm.Status.Text = itm.Status.Text .. "  -  see the message at the top" end
     if tostring(itm.Status.Text):lower():find("fail") then noteProblem(displayName(selectedGroup.base) .. ": " .. itm.Status.Text) end
 end
 
@@ -3766,6 +3787,19 @@ if fileExists(CORE_DIR .. "/rolled_back.txt") then
     os.remove(CORE_DIR .. "/rolled_back.txt")
     itm.Status.Text = "the last update didn't start, so the previous version was restored"
 end
+-- Resolve too old or free: say so up front instead of PRE / POST quietly doing nothing.
+-- Self-test "FAKERESOLVE|<product>|<version>" pretends to be another Resolve.
+do
+    local okP, product = pcall(function() return resolve:GetProductName() end)
+    local okV, version = pcall(function() return resolve:GetVersionString() end)
+    local fp, fv = selftestSpec:match("^FAKERESOLVE|(.-)|(.*)$")
+    if fp then product, version, okP, okV = fp, fv, true, true; Bins.L.hold = 6 end
+    Bins.resolveWarn = Bins.resolveProblem(okP and product, okV and version)
+    if Bins.resolveWarn then
+        itm.ResolveWarn.Text = Bins.resolveWarn; itm.ResolveWarn.Hidden = false
+        pcall(function() win:RecalcLayout() end)
+    end
+end
 local startupChecked = false
 while not closed do
     disp:StepLoop(0)
@@ -3833,6 +3867,7 @@ while not closed do
                 .. "\nupdateinfo=" .. tostring(itm.UpdateInfo.Text)
                 .. "\nstore=" .. #STORE_ORDER .. "\nstoreids=" .. table.concat(STORE_ORDER, ",") .. "\nstatus=" .. tostring(itm.Status.Text)
                 .. "\nsnaprow_hidden=" .. tostring(itm.SnapRow and itm.SnapRow.Hidden) .. " logoframe_end=" .. tostring(logoFrame) .. "/" .. tostring(logoAnimation and logoAnimation.count)
+                .. "\nresolvewarn=" .. tostring(Bins.resolveWarn):gsub("\n", " ")
                 .. "\napply=" .. selftestApply .. "\n")
             f:close()
         end

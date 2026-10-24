@@ -1,6 +1,7 @@
-version = 1.9.6
+version = 1.9.7
 file = hub.lua
-sha256 = 7dc2a9d87f1aca07c862e583282247dd2ea6203617ea25d0987f18521fdb528c
+sha256 = c2e905d7f49bbeea955c15774386b9cc985b5ecc8bb7955e11755029794f58ce
+notes = Tells you right away if your DaVinci Resolve is too old (before 21.1) or the free version, and what to do
 notes = Fix: closing the Hub could make it switch back to an older version
 notes = MV Motion Blur Post pulled past the end of its shot shows the next shot instead of a frozen frame
 notes = Stretch MV Motion Blur Pre / Post by hand: drag the Pre's left edge or the Post's right edge, the footage stays in sync and the blur ramp stretches along
