@@ -1,6 +1,7 @@
-version = 1.9.5
+version = 1.9.6
 file = hub.lua
-sha256 = 9bc60c28c970ae51227126b50d1ecada48f85a2ba4e5148950ef2f8d6fbb56f7
+sha256 = 7dc2a9d87f1aca07c862e583282247dd2ea6203617ea25d0987f18521fdb528c
+notes = Fix: closing the Hub could make it switch back to an older version
 notes = MV Motion Blur Post pulled past the end of its shot shows the next shot instead of a frozen frame
 notes = Stretch MV Motion Blur Pre / Post by hand: drag the Pre's left edge or the Post's right edge, the footage stays in sync and the blur ramp stretches along
 notes = Fix: MV Motion Blur Pre can be placed next to a Post at the same cut

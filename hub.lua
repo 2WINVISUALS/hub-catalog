@@ -38,7 +38,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.9.5"
+local HUB_VERSION = "1.9.6"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -3769,6 +3769,9 @@ end
 local startupChecked = false
 while not closed do
     disp:StepLoop(0)
+    -- closed during StepLoop: the widgets are gone, and touching them errors ("index field 'Icon'"),
+    -- which the launcher counts as a failed version and rolls back (seen 2026-10-24)
+    if closed then break end
     if not startupChecked then
         -- once the window is showing: product list + update check (a second or two)
         startupChecked = true
@@ -3785,7 +3788,7 @@ while not closed do
             end
         end)
     end
-    processLayout()
+    pcall(processLayout)   -- layout and animations are cosmetic: an error there must not end the Hub
     if Bins.L.right then
         local g = win.Geometry
         if g and g[3] ~= Bins.L.lastW then
@@ -3812,7 +3815,8 @@ while not closed do
             if Bins.L.queue and #Bins.L.queue > 0 then Bins.L.pending = table.remove(Bins.L.queue, 1) end
         end
     end
-    advanceAnimations()
+    if closed then break end
+    pcall(advanceAnimations)
     bmd.wait(0.01)
     if selftestStart and os.clock() - selftestStart > (Bins.L.hold or 2) then
         local f = io.open(HUB_DIR .. "/.selftest_result", "w")
