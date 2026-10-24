@@ -38,7 +38,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.9.7"
+local HUB_VERSION = "1.9.8"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -2144,8 +2144,9 @@ local function applyEffect(effect, targetsOverride)
         if mode == "PLAYHEAD" then return t.playhead end
         if mode == "ONCUT" then return t.s - math.floor(len / 2) end
         if mode then return t.s end
-        return isPre and (t.s - len) or t.s
+        return isPre and ((t.preCut or t.s) - len) or t.s
     end
+    Bins.preNote = nil
 
     for _, t in ipairs(targets) do
         local span = t.e - t.s
@@ -2166,6 +2167,13 @@ local function applyEffect(effect, targetsOverride)
             if trueLength[key] and expect < trueLength[key] then
                 request = math.max(1, math.floor(expect * request / trueLength[key] + 0.5))
             end
+        end
+        -- a Pre needs footage before the cut at the clip's head. Short of it, it still goes on: shortened to the
+        -- frames there are, or with none at all (the clip starts the timeline) on the clip's own end cut
+        if isPre and not mode and t.s - expect < tl:GetStartFrame() then
+            local room = t.s - tl:GetStartFrame()
+            if room < 1 then t.preCut, room = t.e, span; Bins.preNote = " at the clip's end (nothing before it)" end
+            if room < expect then request = math.max(1, math.floor(room * request / expect + 0.5)); expect = room end
         end
         local at = anchor(t, expect)
         if not at then
@@ -2189,8 +2197,12 @@ local function applyEffect(effect, targetsOverride)
                     if (isPre or mode == "ONCUT") and fixed ~= at then
                         tl:DeleteClips({ item }, false)
                         if fixed < tl:GetStartFrame() then
-                            item = nil
-                            failed = "not enough footage before this cut"
+                            -- longer than the frames before the cut: shortened to fit them
+                            local room = (t.preCut or t.s) - tl:GetStartFrame()
+                            request = math.max(1, math.floor(room * request / got + 0.5))
+                            item = place(mp, preset, dest, tl:GetStartFrame(), request)
+                            if item then got = lengthOf(item)
+                            else failed = "Resolve refused the corrected placement" end
                         else
                             item = place(mp, preset, dest, fixed, request)
                             if item then got = lengthOf(item)
@@ -2222,7 +2234,7 @@ local function applyEffect(effect, targetsOverride)
     if playhead then tl:SetCurrentTimecode(playhead) end
     if placed == 0 then return "Failed: " .. (failed or "unknown error") end
     local msg = displayName(effect.name) .. " -> " .. (dropped or natural or "?") .. "f on "
-                .. placed .. " clip" .. (placed == 1 and "" or "s")
+                .. placed .. " clip" .. (placed == 1 and "" or "s") .. (Bins.preNote or "")
     if failed then msg = msg .. "  (" .. (#targets - placed) .. " failed)" end
     return msg
 end

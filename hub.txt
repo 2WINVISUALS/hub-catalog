@@ -1,6 +1,7 @@
-version = 1.9.7
+version = 1.9.8
 file = hub.lua
-sha256 = c2e905d7f49bbeea955c15774386b9cc985b5ecc8bb7955e11755029794f58ce
+sha256 = 3d58f585c36d1e7d17cfd45fde14073fc320c6c38b9a8fbc09e74d00e790ca2f
+notes = Pre effects always apply: shortened when there's little footage before the cut, or on the clip's end when it starts the timeline
 notes = Tells you right away if your DaVinci Resolve is too old (before 21.1) or the free version, and what to do
 notes = Fix: closing the Hub could make it switch back to an older version
 notes = MV Motion Blur Post pulled past the end of its shot shows the next shot instead of a frozen frame
