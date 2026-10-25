@@ -29,15 +29,16 @@
 
     Effect kinds: preset (default; a clip of that name in the pack's bin:
     adjustment clips, Fusion titles, generators), clip (duplicates the shot
-    and applies Packs/<id>/ClipFX/<name>.setting), media (imports the file
-    and lays it on the track above).
+    and applies Packs/<id>/ClipFX/<name>.setting), carrier (a Fusion
+    Generator preset holding the effect's macro, laid over the shot and fed the
+    shot's whole file), media (imports the file and lays it on the track above).
 
     Run from:  Workspace > Scripts > Utility > VFX HUB
     (that script is a small launcher; this file is 2WIN VFX Hub/Core/hub.lua)
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.8.1"
+local HUB_VERSION = "1.9.8"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -601,6 +602,12 @@ local function buildCatalogue()
                 if e.kind == "clip" then
                     effect.clip = true
                     effect.setting = pack.dir .. "/ClipFX/" .. e.name .. ".setting"
+                    -- "clip | direct": Pre/Post go on the clip itself, never on a duplicate
+                    effect.onClip = (e.extra or ""):lower():match("^%s*direct%s*$") ~= nil
+                elseif e.kind == "copy" then
+                    effect.clip, effect.copyfx = true, true   -- carrier over a copy of the shot (Bins.copyFx)
+                elseif e.kind == "carrier" then
+                    effect.clip, effect.carrier = true, true
                 elseif e.kind == "media" then
                     local rel = e.extra or ""
                     local okPath = rel ~= "" and not rel:find("%.%.") and not rel:find("^[/\\]") and not rel:find(":")
@@ -692,6 +699,290 @@ end
 -- be renamed by script, so they keep their old names there).
 local Bins = { HUB = "2WIN VFX Hub", LEGACY = "2WIN VFX Hub - " }
 
+-- presets.drb holds 23.976 media, and some presets start their comp a few frames before the clip.
+-- Resolve 21.1.1 re-bases a clip's comp by one hour at the TIMELINE rate whenever it saves the comp
+-- in full (Inspector tweak, duplicate, move, reload): a 23.976 clip on a 29.97 (etc.) timeline then
+-- freezes the footage under it, and a comp starting before its clip holds its last frames.
+-- So the Hub uses a copy of each pack's presets made for the timeline's rate, with every comp starting
+-- on the clip's first frame. A pack may ship presets_<fps>.drb; otherwise the Hub builds that copy
+-- once from presets.drb (Packs/<pack>/Generated/), with tar (Windows 10+ and macOS have it).
+-- Anything failing leaves the Hub exactly as before (presets.drb as is).
+Bins.RATES = { "23.976", "24", "25", "29.97", "30", "47.952", "48", "50", "59.94", "60", "119.88", "120" }
+Bins.Rate = { VERSION = "r1", failed = {} }
+
+-- Timeline rate -> tag ("29.97"...), or nil when unknown or this pack's copy could not be made.
+function Bins.rateTag(tl, pack)
+    local ok, v = pcall(function() return tl:GetSetting("timelineFrameRate") end)
+    local fps = ok and tonumber(tostring(v or ""):match("[%d%.]+"))
+    if not fps then return nil end
+    -- carriers are Fusion Compositions, not adjustment clips: one presets.drb at every rate
+    for _, e in ipairs(pack and pack.effects or {}) do if e.kind == "carrier" or e.kind == "copy" then return nil end end
+    for _, tag in ipairs(Bins.RATES) do
+        if math.abs(fps - tonumber(tag)) < 0.01 then
+            if pack and Bins.Rate.failed[pack.id .. "@" .. tag] then return nil end
+            return tag
+        end
+    end
+    return nil
+end
+
+do
+    local R = Bins.Rate
+    local isWin = package.config:sub(1, 1) == "\\"
+    local EXACT = { ["23.976"] = 24000 / 1001, ["29.97"] = 30000 / 1001, ["47.952"] = 48000 / 1001,
+                    ["59.94"] = 60000 / 1001, ["119.88"] = 120000 / 1001 }
+    -- The two preset records ever shipped zstd-compressed (Lua can't inflate zstd): their plain form.
+    local KNOWN = {
+        ["00000002000000528128b52ffd205045020014040a270a181a100020f6eeada50d1209466c617368205072653004120f41646a7573746d656e7420436c69701a0909872211b5dcf93740214d621058f11fac40280601001d3002"] =
+            "0a270a181a100000000000000000000000000000000020f6eeada50d1209466c617368205072653004120f41646a7573746d656e7420436c69701a0909872211b5dcf93740214d621058f11fac402806",
+        ["00000002000000578128b52ffd20556d020064040a2c0a181a100020c888eea90d120e4d563220526970706c65205072653004120f41646a7573746d656e7420436c69701a0909872211b5dcf937402180dc6b2e9c20ac40281401001d3002"] =
+            "0a2c0a181a100000000000000000000000000000000020c888eea90d120e4d563220526970706c65205072653004120f41646a7573746d656e7420436c69701a0909872211b5dcf937402180dc6b2e9c20ac402814",
+    }
+
+    local function hex2bin(h) return (h:gsub("%x%x", function(c) return string.char(tonumber(c, 16)) end)) end
+    local function bin2hex(b) return (b:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
+    local function be32(n) return string.char(math.floor(n / 16777216) % 256, math.floor(n / 65536) % 256, math.floor(n / 256) % 256, n % 256) end
+
+    -- IEEE-754 little-endian doubles (positive, normal numbers are all this needs)
+    local function packDouble(x)
+        local m, e = math.frexp(x)
+        local mant = (m * 2 - 1) * 2 ^ 52
+        local exp = e - 1 + 1023
+        local b = {}
+        for i = 1, 6 do b[i] = mant % 256; mant = math.floor(mant / 256) end
+        b[7] = (exp % 16) * 16 + mant
+        b[8] = math.floor(exp / 16)
+        return string.char(unpack(b))
+    end
+    R.packDouble = packDouble
+
+    -- protobuf: list of { field, wire, value } (varints as numbers, the rest as byte strings)
+    local function varint(s, i)
+        local n, mul = 0, 1
+        while true do
+            local c = s:byte(i); i = i + 1
+            n = n + (c % 128) * mul; mul = mul * 128
+            if c < 128 then return n, i end
+        end
+    end
+    local function encVarint(n)
+        local out = {}
+        repeat
+            local c = n % 128; n = math.floor(n / 128)
+            out[#out + 1] = string.char(n > 0 and c + 128 or c)
+        until n == 0
+        return table.concat(out)
+    end
+    local function pbParse(s)
+        local out, i = {}, 1
+        while i <= #s do
+            local key; key, i = varint(s, i)
+            local f, w = math.floor(key / 8), key % 8
+            local v
+            if w == 0 then v, i = varint(s, i)
+            elseif w == 1 then v = s:sub(i, i + 7); i = i + 8
+            elseif w == 5 then v = s:sub(i, i + 3); i = i + 4
+            elseif w == 2 then local n; n, i = varint(s, i); v = s:sub(i, i + n - 1); i = i + n
+            else error("wire " .. w) end
+            out[#out + 1] = { f, w, v }
+        end
+        return out
+    end
+    local function pbBuild(list)
+        local out = {}
+        for _, x in ipairs(list) do
+            local f, w, v = x[1], x[2], x[3]
+            out[#out + 1] = encVarint(f * 8 + w)
+            if w == 0 then out[#out + 1] = encVarint(v)
+            elseif w == 2 then out[#out + 1] = encVarint(#v) .. v
+            else out[#out + 1] = v end
+        end
+        return table.concat(out)
+    end
+
+    -- One preset's generator record (hex) -> the same record at `rate`, starting at `start` seconds.
+    local function newGenerator(hex, rate, start)
+        local b = hex2bin(hex)
+        local flag = b:byte(9)
+        local raw
+        if flag == 0x80 then raw = b:sub(10)
+        elseif flag == 0x81 and KNOWN[hex:lower()] then raw = hex2bin(KNOWN[hex:lower()])
+        else return nil end
+        local fields = pbParse(raw)
+        local seen3, seen4 = false, false
+        for _, x in ipairs(fields) do
+            if x[1] == 3 then x[3] = pbBuild({ { 1, 1, packDouble(rate) } }); seen3 = true end
+            if x[1] == 4 and x[2] == 1 then x[3] = packDouble(start); seen4 = true end
+        end
+        if not (seen3 and seen4) then return nil end      -- not an adjustment-clip preset (titles...)
+        raw = pbBuild(fields)
+        local out = b:sub(1, 4) .. be32(#raw + 1) .. string.char(0x80) .. raw
+        local h = bin2hex(out)
+        return hex:match("%u") and h:upper() or h
+    end
+
+    -- The comp record: FusionStartFrameOffset (a 4-byte int in Resolve's QVariantMap) -> value.
+    local OFFKEY = bin2hex(("FusionStartFrameOffset"):gsub(".", "\0%0"))
+    local function newComp(hex, value)
+        local lower = hex:lower()
+        local k = lower:find(OFFKEY, 1, true)
+        if not k then return nil end
+        local p = k + #OFFKEY                            -- type (4 bytes), null flag (1), value (4)
+        local typ = lower:sub(p, p + 7)
+        if typ ~= "00000002" and typ ~= "00000003" then return nil end
+        if value < 0 then value = value + 4294967296 end
+        local v = bin2hex(be32(value))
+        if hex:match("%u") then v = v:upper() end
+        return hex:sub(1, p + 9) .. v .. hex:sub(p + 18)
+    end
+
+    -- Rewrites one MpFolder.xml; returns new text and the number of presets changed (nil on error).
+    function R.rewriteXml(text, tag)
+        local rate = EXACT[tag] or tonumber(tag)
+        local base = math.floor(3600 * rate + 1e-6)          -- what Resolve uses: 86313 at 23.976, 107892 at 29.97
+        local start = (base + 0.25) / rate                   -- +0.25 frame: In lands on base whether Resolve floors or rounds
+        local out, pos, changed = {}, 1, 0
+        while true do
+            local g = text:find("<Sm2MpGenerator ", pos, true)
+            if not g then break end
+            local nextG = text:find("<Sm2MpGenerator ", g + 1, true) or (#text + 1)
+            local a1 = text:find("<FieldsBlob>", g, true)
+            local a2 = a1 and text:find("</FieldsBlob>", a1, true)
+            local c0 = a2 and text:find("<Sm2TiCompositionTable", a2, true)
+            local c1 = c0 and text:find("<FieldsBlob>", c0, true)
+            local c2 = c1 and text:find("</FieldsBlob>", c1, true)
+            if not (a2 and c2) or c2 > nextG then
+                out[#out + 1] = text:sub(pos, nextG - 1); pos = nextG
+            else
+                local gen = newGenerator(text:sub(a1 + 12, a2 - 1), rate, start)
+                local comp = gen and newComp(text:sub(c1 + 12, c2 - 1), -base)
+                if gen and comp then
+                    out[#out + 1] = text:sub(pos, a1 + 11) .. gen .. text:sub(a2, c1 + 11) .. comp
+                    pos = c2; changed = changed + 1
+                else
+                    out[#out + 1] = text:sub(pos, nextG - 1); pos = nextG
+                end
+            end
+        end
+        out[#out + 1] = text:sub(pos)
+        return table.concat(out), changed
+    end
+
+    -- Runs a command and waits for it; on Windows without a console window.
+    local function run(cmd)
+        if not isWin then
+            local r = os.execute(cmd .. " >/dev/null 2>&1")
+            return r == 0 or r == true
+        end
+        local ok, res = pcall(function()
+            local ffi = require("ffi")
+            pcall(ffi.cdef, [[
+                int __stdcall CreateProcessW(const uint16_t*, uint16_t*, void*, void*, int, unsigned long, void*, const uint16_t*, void*, void*);
+                unsigned long __stdcall WaitForSingleObject(void*, unsigned long);
+                int __stdcall GetExitCodeProcess(void*, unsigned long*);
+                int __stdcall CloseHandle(void*);
+            ]])
+            pcall(ffi.cdef, [[ int __stdcall MultiByteToWideChar(unsigned int, unsigned long, const char*, int, uint16_t*, int); ]])
+            local k = ffi.load("kernel32")
+            local n = k.MultiByteToWideChar(65001, 0, cmd, -1, nil, 0)
+            local w = ffi.new("uint16_t[?]", n); k.MultiByteToWideChar(65001, 0, cmd, -1, w, n)
+            local si = ffi.new("uint8_t[104]"); ffi.cast("uint32_t*", si)[0] = 104
+            local pi = ffi.new("void*[3]")
+            if k.CreateProcessW(nil, w, nil, nil, 0, 0x08000000, nil, nil, si, pi) == 0 then return false end
+            k.WaitForSingleObject(pi[0], 120000)
+            local code = ffi.new("unsigned long[1]"); k.GetExitCodeProcess(pi[0], code)
+            k.CloseHandle(pi[0]); k.CloseHandle(pi[1])
+            return code[0] == 0
+        end)
+        return ok and res
+    end
+    -- Windows: double quotes, backslashes. macOS: single quotes (safe for spaces, [ ], $ and quotes).
+    local function q(p)
+        if isWin then return '"' .. p:gsub("/", "\\") .. '"' end
+        return "'" .. p:gsub("'", "'\\''") .. "'"
+    end
+    local TAR = isWin and (os.getenv("SystemRoot") or "C:\\Windows") .. "\\System32\\tar.exe" or "tar"
+    local function mkdir(p)
+        if isWin then return run('cmd.exe /c mkdir ' .. q(p)) or fileExists(p .. "/.") end
+        return run("mkdir -p " .. q(p))
+    end
+    local function rmtree(p)
+        if isWin then run('cmd.exe /c rmdir /s /q ' .. q(p)) else run("rm -rf " .. q(p)) end
+    end
+
+    -- Builds Packs/<pack>/Generated/presets_<tag>_<stamp>_r1.drb from presets.drb. Returns its path or nil.
+    local function build(pack, tag, out)
+        local gen = pack.dir .. "/Generated"
+        local tmp = gen .. "/tmp_" .. tag:gsub("%.", "_")
+        local log = { os.date("%Y-%m-%d %H:%M:%S") .. "  " .. pack.id .. " @" .. tag .. "  tar=" .. TAR }
+        local function note(s) log[#log + 1] = s; writeAll(gen .. "/build_log_" .. tag .. ".txt", table.concat(log, "\n") .. "\n") end
+        rmtree(tmp); mkdir(tmp)
+        local okX = run(q(TAR) .. " -xf " .. q(pack.drbPath) .. " -C " .. q(tmp))
+        note("extract " .. tostring(okX))
+        if not okX then rmtree(tmp); return nil end
+        local list = tmp .. "/.files"
+        -- the bin's folder XMLs: listed by tar itself (no directory walking in plain Lua)
+        local okList
+        if isWin then
+            -- /s + one outer pair of quotes: cmd keeps the inner quoted paths intact
+            okList = run('cmd.exe /s /c "' .. q(TAR) .. ' -tf ' .. q(pack.drbPath) .. ' > ' .. q(list) .. '"')
+        else   -- not run(): its own >/dev/null would swallow the listing
+            local r = os.execute(q(TAR) .. " -tf " .. q(pack.drbPath) .. " > " .. q(list) .. " 2>/dev/null")
+            okList = (r == 0 or r == true)
+        end
+        local names = okList and readAll(list)
+        os.remove(list)
+        note("list " .. tostring(okList) .. " entries " .. (names and select(2, names:gsub("\n", "")) or 0))
+        if not names then rmtree(tmp); return nil end
+        local total, tops = 0, {}
+        for name in names:gmatch("[^\r\n]+") do
+            local top = name:match("^([^/]+)")
+            if top and not tops[top] then tops[top] = true; tops[#tops + 1] = top end
+            if name:match("MpFolder%.xml$") then
+                local path = tmp .. "/" .. name
+                local text = readAll(path)
+                if not text then rmtree(tmp); return nil end
+                local new, n = R.rewriteXml(text, tag)
+                if not new or not writeAll(path, new) then rmtree(tmp); return nil end
+                total = total + n
+            end
+        end
+        note("presets rewritten " .. total)
+        if total == 0 then rmtree(tmp); return nil end
+        os.remove(out)
+        local args = {}
+        for _, t in ipairs(tops) do args[#args + 1] = q(t) end
+        local ok = run(q(TAR) .. " --format zip -cf " .. q(out) .. " -C " .. q(tmp) .. " " .. table.concat(args, " "))
+        rmtree(tmp)
+        note("zip " .. tostring(ok) .. " exists " .. tostring(fileExists(out)))
+        if not ok or not fileExists(out) then os.remove(out); return nil end
+        return out, total
+    end
+
+    -- The presets file for this pack at this rate: shipped presets_<tag>.drb, or the built copy.
+    function R.path(pack, tag)
+        if not tag then return nil end
+        local key = pack.id .. "@" .. tag
+        if R.failed[key] then return nil end
+        for _, e in ipairs(pack.effects or {}) do          -- titles / overlays: not adjustment-clip presets
+            if e.place then R.failed[key] = true; return nil end
+        end
+        local mark = pack.dir .. "/Generated/failed_" .. tag .. "_" .. (pack.presets or "x") .. "_" .. R.VERSION .. ".txt"
+        if fileExists(mark) then R.failed[key] = true; return nil end
+        local shipped = pack.dir .. "/presets_" .. tag .. ".drb"
+        if fileExists(shipped) then return shipped end
+        if not fileExists(pack.drbPath) then R.failed[key] = true; return nil end
+        local out = pack.dir .. "/Generated/presets_" .. tag .. "_" .. (pack.presets or "x") .. "_" .. R.VERSION .. ".drb"
+        if fileExists(out) then return out end
+        mkdir(pack.dir .. "/Generated")
+        local ok, res = pcall(build, pack, tag, out)
+        if ok and res then return res end
+        R.failed[key] = true
+        writeAll(mark, tostring(res))                       -- don't retry every session (a new VERSION retries)
+        return nil
+    end
+end
+
 function Bins.hub(mp, create)
     local root = mp:GetRootFolder()
     local f = childFolder(root, Bins.HUB)
@@ -734,8 +1025,11 @@ end
 -- A pack whose pack.txt carries "presets = <stamp>" is imported into its own
 -- sub-bin per stamp, so an updated presets.drb comes in fresh; older sub-bins stay
 -- put for clips already on timelines.
-local function stampFolderName(pack)
-    return (pack.presets and pack.presets ~= "") and ("Presets " .. pack.presets) or nil
+-- With a rate tag (see Bins.rateTag) that rate's copy gets its own sub-bin: "Presets <stamp> @29.97fps".
+local function stampFolderName(pack, tag)
+    local name = (pack.presets and pack.presets ~= "") and ("Presets " .. pack.presets) or nil
+    if tag then name = (name or "Presets") .. " @" .. tag .. "fps " .. Bins.Rate.VERSION end
+    return name
 end
 
 -- Every clip under each pack's bin, by lower-cased name. Pack bins are indexed
@@ -747,7 +1041,7 @@ local stalePacks = {}      -- pack ids whose bin is in the project but not their
 
 local function refreshPresets()
     presetIndex, stalePacks = {}, {}
-    local _, proj = currentTimeline()
+    local tl, proj = currentTimeline()
     if not proj then return presetIndex end
     local root = proj:GetMediaPool():GetRootFolder()
     local function collect(folder, generatorsOnly)
@@ -763,12 +1057,14 @@ local function refreshPresets()
     local mp = proj:GetMediaPool()
     for _, pack in ipairs(PACKS) do
         local folders = Bins.folders(mp, pack)
-        local stamp = stampFolderName(pack)
+        local stamp = stampFolderName(pack, tl and Bins.rateTag(tl, pack))
         local current
         for _, f in ipairs(folders) do current = current or (stamp and childFolder(f, stamp)) end
         if current then collect(current, false) end
         for _, f in ipairs(folders) do collect(f, false) end
-        if #folders > 0 and stamp and not current then stalePacks[pack.id] = true end
+        -- No bin of the current stamp (and rate) yet: import it, even when same-named presets sit
+        -- elsewhere in the pool (an old Power Bin import), so the fixed presets are always used.
+        if stamp and not current then stalePacks[pack.id] = true end
     end
     collect(root, true)
     return presetIndex
@@ -785,11 +1081,15 @@ local function importPacks(proj, only)
       if not only or pack.id == only.id then
         local needed = {}
         for _, e in ipairs(pack.effects) do
-            if e.kind == "preset" then needed[#needed + 1] = e.name:lower() end
+            if e.kind == "preset" or e.kind == "carrier" or e.kind == "copy" then needed[#needed + 1] = e.name:lower() end
         end
         if #needed > 0 then
             local existing = Bins.pack(mp, pack, false)
-            local stamp = stampFolderName(pack)
+            local tl = proj:GetCurrentTimeline()
+            local tag = tl and Bins.rateTag(tl, pack)
+            local drbPath = tag and Bins.Rate.path(pack, tag)
+            if not drbPath then tag, drbPath = nil, pack.drbPath end   -- could not be made: presets.drb as before
+            local stamp = stampFolderName(pack, tag)
             local target = existing
             if existing and stamp then target = childFolder(existing, stamp) end
             local have = {}
@@ -803,12 +1103,12 @@ local function importPacks(proj, only)
             local complete = true
             for _, n in ipairs(needed) do if not have[n] then complete = false end end
             if not complete then
-                if not fileExists(pack.drbPath) then
+                if not fileExists(drbPath) then
                     messages[#messages + 1] = pack.name .. ": presets file missing, reinstall the pack"
                 else
                     local dest = existing or Bins.pack(mp, pack, true)
                     if dest and stamp then dest = target or mp:AddSubFolder(dest, stamp) end
-                    if dest and mp:SetCurrentFolder(dest) and mp:ImportFolderFromFile(pack.drbPath) then
+                    if dest and mp:SetCurrentFolder(dest) and mp:ImportFolderFromFile(drbPath) then
                         imported = true
                         messages[#messages + 1] = pack.name .. " ready"
                     else
@@ -941,8 +1241,11 @@ local function findTarget(tl, preferPlayhead)
     -- each one, so a highlighted Pre + Post pair placed the effect on two shots.)
     local picks = {}
     -- ipairs, not pairs: Resolve's Lua lists carry an extra "__flags" key.
-    local sel = tl:GetSelectedClips()
-    if sel then for _, c in ipairs(sel) do if not isGenerator(c) then picks[#picks + 1] = c end end end
+    -- Timeline.GetSelectedClips only exists from Resolve 21.0.4: on older versions (20.x, 19) the
+    -- call itself errors ("attempt to call method 'GetSelectedClips' (a nil value)"), so it is
+    -- guarded and those versions fall through to the clip under the playhead below.
+    local okSel, sel = pcall(function() return tl:GetSelectedClips() end)
+    if okSel and sel then for _, c in ipairs(sel) do if not isGenerator(c) then picks[#picks + 1] = c end end end
     -- Resolve auto-selects one half of a fresh split, usually the LEFT piece, whose head is
     -- the PREVIOUS cut. For transitions and overlays the playhead decides: a single selected
     -- clip that does not contain the playhead, while the playhead sits on a cut, is that
@@ -1035,9 +1338,14 @@ local function angleSource(tl, proj, shot, track)
     if not twin then return nil, nil, "could not duplicate the timeline to flatten" end
     local s = math.floor(shot:GetStart())
     local media, left, err
+    local oldResolve = false
     for _, item in ipairs(twin:GetItemListInTrack("video", track)) do
         if math.floor(item:GetStart()) == s then
-            if item:FlattenMulticam(resolve.FLATTEN_MULTICAM_RETAIN_GRADE_FROM_ANGLE) then
+            -- TimelineItem.FlattenMulticam is new in Resolve 21.1: guarded so an older Resolve fails with
+            -- a clear message and the temp timeline below is still cleaned up.
+            local okF, flatRes = pcall(function() return item:FlattenMulticam(resolve.FLATTEN_MULTICAM_RETAIN_GRADE_FROM_ANGLE) end)
+            if not okF then oldResolve = true end
+            if okF and flatRes then
                 for _, flat in ipairs(twin:GetItemListInTrack("video", track)) do
                     if math.floor(flat:GetStart()) == s then
                         media, left = flat:GetMediaPoolItem(), flat:GetLeftOffset()
@@ -1046,7 +1354,10 @@ local function angleSource(tl, proj, shot, track)
             end
         end
     end
-    if not media then err = "could not flatten the multicam angle" end
+    if not media then
+        err = oldResolve and "Effects on multicam clips need DaVinci Resolve 21.1 or newer - please update Resolve."
+            or "could not flatten the multicam angle"
+    end
     proj:SetCurrentTimeline(tl)
     mp:DeleteTimelines({ twin })
     return media, left, err
@@ -1082,6 +1393,11 @@ function Bins.J.addComp(item, name, label)
     if ok and id then local e = Bins.J.entry(label); e.comps[#e.comps + 1] = { id = id, name = name } end
 end
 function Bins.J.count() return #Bins.J.stack end
+-- a clip an effect switched off (Bins.copyFx: the original under the MV Motion Blur clip) - UNDO switches it on
+function Bins.J.addEnable(item, label)
+    local ok, id = pcall(function() return item:GetUniqueId() end)
+    if ok and id then local e = Bins.J.entry(label); e.enables = e.enables or {}; e.enables[#e.enables + 1] = id end
+end
 
 -- Removes the newest journal entry. Returns a status line.
 function Bins.J.undo(tl)
@@ -1122,13 +1438,485 @@ function Bins.J.undo(tl)
         if done then restored = restored + 1 else gone = gone + 1 end
     end
     if #doomed > 0 then tl:DeleteClips(doomed, false) end
+    for _, id in ipairs(e.enables or {}) do
+        if byId[id] then pcall(function() byId[id]:SetClipEnabled(true) end) end
+    end
     table.remove(Bins.J.stack)
     local msg = "undid " .. (e.label or "last effect")
     if gone > 0 then msg = msg .. "  (" .. gone .. " already removed)" end
     return msg
 end
 
+-- Carrier effects (Random Edits): a retime effect has to reach frames outside the shot, but an
+-- adjustment clip has just the frame under it, and an Edit-page effect on a Fusion clip only
+-- reaches that clip's own frames. So the preset is a media-pool Fusion Generator holding the
+-- effect's macro (its controls show in the Inspector). Each placement feeds it two nested sources:
+--   1. the shot's WHOLE file as a compound clip carrying the shot's grade (Bins.reSource), so every
+--      pulled frame looks like the shot (an Edit-page effect gets its clip's grade after it);
+--   2. a snapshot of the edit itself (Bins.reSnapshot), for Pick From = Whole Timeline.
+-- The macro's hidden SourceFirst/SourceLast/SourceShift and TLFirst/TLLast/TLShift say where each
+-- sits in comp time. The shot itself is never touched.
+
+-- A sub-bin of the pack's bin for media the Hub makes (graded sources, timeline snapshots).
+function Bins.packSub(mp, pack, name)
+    local f = pack and Bins.pack(mp, pack, true)
+    return f and (childFolder(f, name) or mp:AddSubFolder(f, name))
+end
+
+-- The shot's whole file (a multicam shot: its angle's file) as a compound clip with the shot's
+-- grade, built past the timeline's end and taken off again. Returns the compound, the frame of it
+-- under the shot's head and its length (timeline frames), or nil and why.
+function Bins.reSource(tl, proj, shot, track, pack)
+    local mp = proj:GetMediaPool()
+    local mpi, left = shot:GetMediaPoolItem(), shot:GetLeftOffset()
+    if not mpi then return nil, "select a video clip (not an effect clip)" end
+    if mpi:GetClipProperty("Type") == "Multicam" then
+        local why
+        mpi, left, why = angleSource(tl, proj, shot, track)
+        if not mpi then return nil, why end
+    end
+    local frames = tonumber(mpi:GetClipProperty("Frames")) or 0
+    if frames < 1 then return nil, "the clip's media has no frames" end
+    local temp = place(mp, mpi, 1, math.floor(tl:GetEndFrame()) + 10, frames, 0)
+    if not temp then return nil, "could not lay out the clip's media" end
+    shot:CopyGrades({ temp })
+    local cc = tl:CreateCompoundClip({ temp }, { name = "Random Edits source - " .. mpi:GetName() })
+    if not cc then
+        tl:DeleteClips({ temp }, false)
+        return nil, "could not make the graded source"
+    end
+    local cmpi = cc:GetMediaPoolItem()
+    local length = math.floor(cc:GetEnd()) - math.floor(cc:GetStart())
+    tl:DeleteClips({ cc }, false)
+    if not cmpi then return nil, "could not make the graded source" end
+    local bin = Bins.packSub(mp, pack, "Graded sources")
+    if bin then mp:MoveClips({ cmpi }, bin) end
+    return cmpi, left, length
+end
+
+-- Whole Timeline: the edit as it is now (minus Random Edits carriers, so a carrier never feeds on
+-- itself) as ONE compound clip - grades, titles and adjustment clips included. A Timeline-type
+-- MediaIn comes in as layers whose video has no alpha (only titles showed through the macro); a
+-- Compound one is a flat picture. Made on a duplicate of the timeline, which is deleted again.
+-- Only the stretch of the timeline around the shot: clips joined across gaps under 10 seconds, so
+-- strays parked far down the timeline (seen: clips 38 minutes past the end of a music video) don't
+-- turn most Whole Timeline picks into empty frames. One per stretch per Hub session (reopen the Hub
+-- after a re-edit for a fresh one).
+function Bins.reStretch(tl, at)
+    local spans = {}
+    for tr = 1, tl:GetTrackCount("video") do
+        for _, it in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+            spans[#spans + 1] = { math.floor(it:GetStart()), math.floor(it:GetEnd()) }
+        end
+    end
+    table.sort(spans, function(a, b) return a[1] < b[1] end)
+    local gap = math.floor(10 * (tonumber(tl:GetSetting("timelineFrameRate")) or 24))
+    local lo, hi
+    for _, sp in ipairs(spans) do
+        if lo and sp[1] - hi > gap then
+            if at < hi then return lo, hi end
+            lo, hi = nil, nil
+        end
+        if not lo then lo, hi = sp[1], sp[2] else hi = math.max(hi, sp[2]) end
+    end
+    return lo, hi
+end
+
+Bins.reSnaps = {}
+function Bins.reSnapshot(tl, proj, pack, at)
+    local lo, hi = Bins.reStretch(tl, at)
+    if not lo then return nil end
+    local key = tl:GetUniqueId() .. "@" .. lo
+    local hit = Bins.reSnaps[key]
+    if hit then return hit[1], hit[2] end
+    local mp = proj:GetMediaPool()
+    local snap = tl:DuplicateTimeline(tl:GetName() .. " (Random Edits temp)")
+    if not snap then return nil end
+    proj:SetCurrentTimeline(snap)
+    local items = {}
+    for tr = 1, snap:GetTrackCount("video") do
+        local drop = {}
+        for _, it in ipairs(snap:GetItemListInTrack("video", tr) or {}) do
+            -- Carriers are told apart WITHOUT opening comps: loading some Fusion titles' comps by
+            -- script crashes Resolve 21.1.1 (fusionsystem.dll/lua5.1.dll, seen with MV Titles in a
+            -- duplicated timeline). A carrier is a generator (no media pool item) named after its preset.
+            local carrier = it:GetMediaPoolItem() == nil and trim(it:GetName() or "") == Bins.reName
+            local s, e = math.floor(it:GetStart()), math.floor(it:GetEnd())
+            if carrier then drop[#drop + 1] = it
+            elseif s >= lo and e <= hi then items[#items + 1] = it end
+        end
+        if #drop > 0 then snap:DeleteClips(drop, false) end
+    end
+    local cc = #items > 0 and snap:CreateCompoundClip(items, { name = tl:GetName() .. " - whole edit (Random Edits)" })
+    local cmpi = cc and cc:GetMediaPoolItem()
+    local frames = cc and (math.floor(cc:GetEnd()) - math.floor(cc:GetStart()))
+    proj:SetCurrentTimeline(tl)
+    mp:DeleteTimelines({ snap })
+    if not (cmpi and frames and frames > 0) then return nil end
+    local bin = Bins.packSub(mp, pack, "Whole edits")
+    if bin then mp:MoveClips({ cmpi }, bin) end
+    Bins.reSnaps[key] = { cmpi, frames }
+    return cmpi, frames
+end
+
+-- A MediaIn in comp, loaded with mpi from frame 0 to frames-1. A fresh MediaIn now and then keeps
+-- its host clip after the first MediaID (seen on 21.1.1): set it until the right length shows up.
+function Bins.reFeed(comp, mpi, frames, hostName, x)
+    local mi = comp:AddTool("MediaIn", false, x or -100, 0)
+    if not mi then return nil end
+    mi:SetInput("DeepOutputMode", 0)
+    local ok = false
+    for _ = 1, 3 do
+        mi:SetInput("MediaID", mpi:GetMediaId())
+        local a = mi:GetAttrs() or {}
+        ok = tonumber(a.TOOLI_Clip_Length) == frames and a.TOOLS_Clip_Name ~= hostName
+        if ok then break end
+    end
+    if not ok then return nil end
+    -- A second MediaIn in a comp picks Layer "1". Plain playback doesn't mind, but ResolveFX
+    -- Motion Blur then fetches its neighbour frames from that empty layer: dark or black frames.
+    mi:SetInput("Layer", "0")
+    mi:SetInput("ClipTimeStart", 0)
+    mi:SetInput("ClipTimeEnd", frames - 1)
+    -- motion blur (vector or frame blend) reads the frame after: at a source's last frame that would be
+    -- empty, so hold it. NOT HoldFirstFrame: that delays the whole clip by that many frames.
+    mi:SetInput("HoldLastFrame", 100000)
+    return tonumber(mi:GetInput("ClipTimeEnd")) == frames - 1 and mi or nil
+end
+
+function Bins.carrier(effect, targetsOverride)
+    local tl, proj = currentTimeline()
+    if not tl then return "No timeline is open." end
+    local preset = refreshPresets()[effect.name:lower()]
+    if not preset or (effect.pack and stalePacks[effect.pack.id]) then
+        if importPacks(proj, effect.pack) then preset = refreshPresets()[effect.name:lower()] end
+    end
+    if not preset then
+        return "Failed: no preset named '" .. effect.name .. "' - reinstall " .. (effect.pack and effect.pack.name or "the pack")
+    end
+    local targets, err = targetsOverride, nil
+    if not targets then
+        targets, err = findTarget(tl, false)
+        if not targets then return err end
+    end
+    local mp = proj:GetMediaPool()
+    local playhead = tl:GetCurrentTimecode()
+    Bins.reName = effect.name   -- carriers (left out of Whole Timeline snapshots) are known by name
+    local placed, failed = 0, nil
+    for _, t in ipairs(targets) do
+        local shot = t.item
+        local item, why
+        if not (shot and shot:GetMediaPoolItem()) then
+            why = "select a video clip (not an effect clip)"
+        else
+            local s, e = math.floor(shot:GetStart()), math.floor(shot:GetEnd())
+            local track = t.track
+            for tr = 1, tl:GetTrackCount("video") do
+                for _, other in ipairs(tl:GetItemListInTrack("video", tr)) do
+                    if other:GetUniqueId() == shot:GetUniqueId() then track = tr end
+                end
+            end
+            local src, first, frames = Bins.reSource(tl, proj, shot, track, effect.pack)
+            if not src then why = first end
+            -- the edit around this shot (a failed snapshot only disables Whole Timeline)
+            local snap, snapFrames
+            if src then snap, snapFrames = Bins.reSnapshot(tl, proj, effect.pack, s) end
+            local dest = src and destinationTrack(tl, track, s, e)
+            if src and not dest then why = "could not free up a track above" end
+            -- Placed from the shot's frame of the source, so the comp's time roughly matches the
+            -- source's frame numbers. The preset's length counts at its own rate (23.976):
+            -- place, measure, re-place.
+            local request = e - s
+            for _ = 1, 3 do
+                if not dest then break end
+                item = place(mp, preset, dest, s, request, first)
+                if not item then why = "Resolve refused to place the clip" break end
+                local got = math.floor(item:GetEnd()) - math.floor(item:GetStart())
+                if got == e - s and math.floor(item:GetStart()) == s then break end
+                tl:DeleteClips({ item }, false); item = nil
+                why = "could not fit " .. displayName(effect.name) .. " to the clip"
+                request = math.max(1, math.floor(request * (e - s) / math.max(got, 1) + 0.5))
+            end
+            local comp = item and item:GetFusionCompByIndex(1)
+            local rt = comp and comp:FindTool("RE_Time")
+            local feed, tlFeed = comp and comp:FindTool("RE_Source"), comp and comp:FindTool("RE_TLSource")
+            local macro
+            for _, tool in pairs(rt and feed and comp:GetToolList(false) or {}) do
+                if type(tool) ~= "number" and tool.ID == "MacroOperator" then macro = tool end
+            end
+            local mi = macro and Bins.reFeed(comp, src, frames, preset:GetName(), -100)
+            local fed = false
+            if mi then
+                -- A MediaIn can't start before the comp, so it sits at the comp's head (GlobalIn) and
+                -- RE_Source shifts it: comp time T shows source frame T - first0, first0 being the
+                -- comp time of source frame 0 (shot head = comp start = source frame `first`).
+                local r0 = tonumber(comp:GetAttrs().COMPN_RenderStart) or 0
+                local first0 = r0 - first
+                rt:SetInput("SourceFirst", first0)
+                rt:SetInput("SourceLast", first0 + frames - 1)
+                feed:SetInput("SourceShift", (tonumber(mi:GetInput("GlobalIn")) or r0) - first0)
+                fed = tonumber(rt:GetInput("SourceLast")) == first0 + frames - 1
+                      and macro:ConnectInput(macro:FindMainInput(1).ID, mi) and true
+                -- the snapshot sits in comp time past the source, with a gap
+                local mi2 = fed and snap and tlFeed and Bins.reFeed(comp, snap, snapFrames, preset:GetName(), -100)
+                local in2 = mi2 and macro:FindMainInput(2)
+                if in2 then
+                    local tl0 = first0 + frames + 1000
+                    rt:SetInput("TLFirst", tl0)
+                    rt:SetInput("TLLast", tl0 + snapFrames - 1)
+                    tlFeed:SetInput("TLShift", (tonumber(mi2:GetInput("GlobalIn")) or r0) - tl0)
+                    macro:ConnectInput(in2.ID, mi2)
+                    rt:SetInput("PickFrom", 2)   -- Hub default: Whole Timeline (only when its feed is there)
+                end
+            end
+            if item and not fed then
+                tl:DeleteClips({ item }, false); item = nil
+                why = "could not load the clip's media into " .. displayName(effect.name)
+            end
+        end
+        if item then
+            nameClip(item, effect.name)
+            Bins.J.addClip(item, displayName(effect.name))
+            placed = placed + 1
+        else
+            failed = why or "unknown error"
+        end
+    end
+    if playhead then tl:SetCurrentTimecode(playhead) end
+    if placed == 0 then return "Failed: " .. (failed or "unknown error") end
+    local msg = displayName(effect.name) .. " -> placed over " .. placed .. " clip"
+                .. (placed == 1 and "" or "s") .. ", original untouched"
+    if failed then msg = msg .. "  (" .. (#targets - placed) .. " failed: " .. failed .. ")" end
+    return msg
+end
+
+-- "copy" Clip FX (MV Motion Blur Pre / Post). The Hub can't put an Effects-library effect on a clip (no API), so a
+-- carrier - a media-pool Fusion Composition with the Edit-page effect on it, from presets.drb - goes on the track
+-- above the shot and plays a COPY of the shot: the timeline is duplicated in the background (the only way a script
+-- gets a copy of a clip WITH its speed ramp and grade), that copy becomes a compound clip (kept in the pack bin
+-- "Sources"), and the temp timeline is deleted. The original clip is never touched: to change its ramp, edit it and
+-- apply again (UNDO removes the carrier). Pre goes on the top shot ending at the cut, Post on the top shot starting
+-- there (effect clips and earlier MV Motion Blur clips skipped).
+function Bins.copyShot(tl, frame, isPre, skip)
+    for tr = tl:GetTrackCount("video"), 1, -1 do
+        for _, item in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+            local edge = math.floor(isPre and item:GetEnd() or item:GetStart())
+            if edge == frame and item:GetMediaPoolItem() and not skip[item:GetName() or ""] then return item, tr end
+        end
+    end
+end
+
+-- A compound of a copy of `shot` (track, start s): duplicate the timeline, wrap the twin, delete the duplicate.
+function Bins.copySource(tl, proj, shot, track, s, bin)
+    local mp = proj:GetMediaPool()
+    local twin = tl:DuplicateTimeline("VFX HUB copy (temp)")
+    if not twin then return nil, "could not copy the clip" end
+    proj:SetCurrentTimeline(twin)
+    local copy
+    for _, item in ipairs(twin:GetItemListInTrack("video", track) or {}) do
+        if math.floor(item:GetStart()) == s then copy = item end
+    end
+    if copy then pcall(function() copy:SetClipEnabled(true) end) end   -- an original switched off earlier
+    local wrapped = copy and twin:CreateCompoundClip({ copy }, { name = (shot:GetName() or "clip") .. " - MV Motion Blur source" })
+    local src = wrapped and wrapped:GetMediaPoolItem()
+    proj:SetCurrentTimeline(tl)
+    mp:DeleteTimelines({ twin })
+    if not src then return nil, "could not wrap the copy of the clip" end
+    if bin then mp:MoveClips({ src }, bin) end
+    return src
+end
+
+-- A carrier preset is 23.976 media, so on a timeline at another rate only some lengths exist (29.97: never 4, 9,
+-- 14...; 59.94: about 2 in 5). Finds the longest placement that fits in n frames (place, measure, adjust) and places
+-- it against the cut: from s for a Post, ending at s + n for a Pre (atEnd). Returns the item and its length, or nil
+-- and why. A placement shorter than n leaves the shot's far frame(s) to the original under it.
+-- head (atEnd only): frames of the shot before the n-frame window. The placed Pre gets them, plus any frames the fit
+-- left short, as left handle (its left edge can be dragged back to the shot's start); the offset doesn't change the
+-- rounding, so lengths are measured without it.
+-- MV Motion Blur Pre / Post from the Hub cover at most this many frames at the cut
+Bins.COPY_MAX = 15
+
+function Bins.fitPlace(tl, mp, preset, dest, s, n, atEnd, head)
+    -- the trial placements (often longer than n) go on a new empty top track: on dest one can run into the clip next
+    -- to the window (a Pre placed next to a Post) and Resolve then hands back a dead item
+    local probe = tl:AddTrack("video") and tl:GetTrackCount("video") or nil
+    local got, best = {}, nil
+    local function measure(r)
+        if got[r] == nil then
+            local item = place(mp, preset, probe or dest, s, r)
+            local e0, s0 = item and item:GetEnd(), item and item:GetStart()
+            if item then tl:DeleteClips({ item }, false) end
+            if not (e0 and s0) then return nil end
+            got[r] = math.floor(e0) - math.floor(s0)
+        end
+        return got[r]
+    end
+    local r = n
+    local g = measure(r)
+    if g and g ~= n then r = math.max(1, math.floor(r * n / math.max(g, 1) + 0.5)) end
+    for _ = 1, g and 8 or 0 do
+        g = measure(r)
+        if not g then break end
+        if g <= n and (not best or g > got[best]) then best = r end
+        if g == n then break end
+        if g > n then
+            if r == 1 or (got[r - 1] and got[r - 1] <= n) then break end
+            r = r - 1
+        else
+            if got[r + 1] and got[r + 1] > n then break end
+            r = r + 1
+        end
+    end
+    if probe then tl:DeleteTrack("video", probe) end
+    if not g then return nil, "Resolve refused to place the clip" end
+    if not best then return nil end
+    local len = got[best]
+    local at = atEnd and (s + n - len) or s
+    local sf = (atEnd and head) and (head + n - len) or nil
+    local item = place(mp, preset, dest, at, best, sf)
+    if not item then return nil, "Resolve refused to place the clip" end
+    if math.floor(item:GetStart()) ~= at or math.floor(item:GetEnd()) - math.floor(item:GetStart()) ~= len then
+        tl:DeleteClips({ item }, false)
+        return nil
+    end
+    return item, len
+end
+
+function Bins.copyFx(effect, targetsOverride)
+    local tl, proj = currentTimeline()
+    if not tl then return "No timeline is open." end
+    local playhead = tl:GetCurrentTimecode()   -- before the import: importing the pack's bin moves the playhead
+    local preset = refreshPresets()[effect.name:lower()]
+    if not preset or (effect.pack and stalePacks[effect.pack.id]) then
+        if importPacks(proj, effect.pack) then preset = refreshPresets()[effect.name:lower()] end
+        if playhead then tl:SetCurrentTimecode(playhead) end
+    end
+    if not preset then
+        return "Failed: no preset named '" .. effect.name .. "' - reinstall " .. (effect.pack and effect.pack.name or "the pack")
+    end
+    local targets, err = targetsOverride, nil
+    if not targets then
+        targets, err = findTarget(tl, true)
+        if not targets then return err end
+    end
+    local skip = {}   -- the pack's own clips are never a shot
+    for _, e in ipairs(effect.pack and effect.pack.effects or {}) do skip[e.name] = true end
+    local mp = proj:GetMediaPool()
+    local isPre = (effect.cat == "PRE")
+    local label = displayName(effect.name)
+    local placed, failed = 0, nil
+    -- one placement per press, decided by the playhead (highlighted clips are ignored, like the MV transitions)
+    local ph = playheadFrame(tl)
+    local one, oneTrack
+    if ph then
+        -- the cut: the playhead's own frame if a clip starts / ends there, else the NEAREST cut - a real cut (a clip
+        -- ends and another starts) wins over a plain edge (the start / end of the edit)
+        local starts, ends = {}, {}
+        for tr = 1, tl:GetTrackCount("video") do
+            for _, item in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+                if item:GetMediaPoolItem() and not skip[item:GetName() or ""] then
+                    starts[math.floor(item:GetStart())] = true; ends[math.floor(item:GetEnd())] = true
+                end
+            end
+        end
+        local cut
+        if starts[ph] or ends[ph] then cut = ph end
+        for _, realOnly in ipairs({ true, false }) do
+            if cut then break end
+            local best
+            for f in pairs(realOnly and starts or {}) do
+                if ends[f] and (not best or math.abs(f - ph) < math.abs(best - ph)) then best = f end
+            end
+            if not realOnly then
+                for _, set in ipairs({ starts, ends }) do
+                    for f in pairs(set) do if not best or math.abs(f - ph) < math.abs(best - ph) then best = f end end
+                end
+            end
+            cut = best
+        end
+        if cut then one, oneTrack = Bins.copyShot(tl, cut, isPre, skip) end
+    end
+    if one then targets = { { item = one, track = oneTrack, s = math.floor(one:GetStart()), e = math.floor(one:GetEnd()) } }
+    else targets = { targets[1] } end
+    for _, t in ipairs(targets) do
+        local shot, track = one, oneTrack
+        if not shot then shot, track = Bins.copyShot(tl, t.s, isPre, skip) end
+        if not shot and not isPre and t.item and t.item:GetMediaPoolItem() and not skip[t.item:GetName() or ""] then
+            shot, track = t.item, t.track
+        end
+        if not shot then
+            failed = isPre and "no clip ends at this cut" or "no clip starts at this cut"
+        else
+            local s, e = math.floor(shot:GetStart()), math.floor(shot:GetEnd())
+            local n = e - s
+            -- only the frames at the cut get the carrier (Bins.COPY_MAX at most; the blur ramp plays out over the
+            -- carrier's length), so a long shot doesn't render motion blur end to end; the original stays on
+            local m = math.min(n, Bins.COPY_MAX)
+            local ws = isPre and (e - m) or s
+            local src, why = Bins.copySource(tl, proj, shot, track, s, Bins.packSub(mp, effect.pack, "Sources"))
+            local dest = src and destinationTrack(tl, track, ws, ws + m)
+            if src and not dest then why = "could not free up a track above" end
+            -- the carrier's length counts at its own rate (made at 23.976): Bins.fitPlace finds the longest that fits
+            local item, len = nil, m
+            if dest then
+                -- a Pre gets handles back to the shot's start, so its left edge can be dragged out (stretch)
+                item, len = Bins.fitPlace(tl, mp, preset, dest, ws, m, isPre, n - m)
+                if not item then why = len or ("could not fit " .. label .. " to the clip") end
+            end
+            local comp = item and item:GetFusionCompByIndex(1)
+            local fed = false
+            if comp then
+                -- Bins.reFeed: a fresh MediaIn can keep the carrier as its clip, which caps its trim at the carrier's length
+                local mi, mo = Bins.reFeed(comp, src, n, effect.name), comp:FindTool("MediaOut1")
+                if mi and mo then
+                    -- the MediaIn keeps the whole shot (reFeed: ClipTime 0..n-1), so a carrier stretched by hand shows
+                    -- real frames. Comp time t is the shot's frame t (a Pre starts at its handles), but the MediaIn's
+                    -- GlobalIn sticks at the comp's start when it was loaded, also after the left edge is dragged out:
+                    -- a TimeStretcher at time + GlobalIn lines the two up again.
+                    local out, g = mi, tonumber(mi:GetInput("GlobalIn")) or 0
+                    if g ~= 0 then
+                        out = comp:AddTool("TimeStretcher", false, -50, 0)
+                        if out and out:ConnectInput("Input", mi) then
+                            out.SourceTime:SetExpression("time + " .. g)
+                            if tonumber(out:GetInput("SourceTime", g)) ~= 2 * g then out = nil end
+                        else
+                            out = nil
+                        end
+                    end
+                    -- past the shot's last frame (a Post pulled beyond its shot) the carrier turns transparent, so the
+                    -- next shot under it shows instead of a held frame (the hold stays for motion blur to read)
+                    local bg, dv = out and comp:AddTool("Background", false, -50, 1), out and comp:AddTool("Dissolve", false, 0, 1)
+                    if bg and dv and dv:ConnectInput("Background", out) and dv:ConnectInput("Foreground", bg) then
+                        bg:SetInput("TopLeftAlpha", 0)
+                        dv.Mix:SetExpression("iif(time > " .. (n - 1) .. ", 1, 0)")
+                        if tonumber(dv:GetInput("Mix", n)) == 1 and tonumber(dv:GetInput("Mix", n - 1)) == 0 then out = dv end
+                    end
+                    fed = out and tonumber(mi:GetInput("ClipTimeEnd")) == n - 1 and mo:ConnectInput("Input", out) and true or false
+                end
+            end
+            if item and not fed then
+                tl:DeleteClips({ item }, false); item = nil
+                why = "could not load the clip into " .. label
+            end
+            if item then
+                nameClip(item, effect.name)
+                Bins.J.addClip(item, label)
+                placed = placed + 1
+            else
+                failed = why or "unknown error"
+            end
+        end
+    end
+    if playhead then tl:SetCurrentTimecode(playhead) end
+    if placed == 0 then return "Failed: " .. (failed or "unknown error") end
+    local msg = label .. " -> placed at the cut"
+    if failed then msg = msg .. "  (" .. (#targets - placed) .. " failed: " .. failed .. ")" end
+    return msg
+end
+
 local function applyClipEffect(effect, targetsOverride)
+    if effect.carrier then return Bins.carrier(effect, targetsOverride) end
+    if effect.copyfx then return Bins.copyFx(effect, targetsOverride) end
     local tl, proj = currentTimeline()
     if not tl then return "No timeline is open." end
     if not fileExists(effect.setting) then return "Failed: " .. effect.name .. " is missing from its pack" end
@@ -1142,12 +1930,30 @@ local function applyClipEffect(effect, targetsOverride)
     local isPre = (effect.cat == "PRE")
     local placed, failed = 0, nil
     -- effect.direct: the comp goes straight onto the selected clip, no duplicate.
+    -- effect.onClip (pack "clip | direct") does the same for PRE / POST: Pre on the shot that ends at the cut,
+    -- Post on the one that starts there - the clip keeps its grade and stays under any adjustment clips.
     -- A comp that fails to load is removed again; the clip itself is never deleted.
-    if effect.direct then
+    local onClipPP = effect.onClip and (effect.cat == "PRE" or effect.cat == "POST")
+    if effect.direct or onClipPP then
+        -- onClipTop: the highest footage clip with a cut at the frame (Post: starts there, Pre: ends there);
+        -- adjustment / effect clips have no media pool item and are skipped
+        local function onClipTop(frame)
+            for tr = tl:GetTrackCount("video"), 1, -1 do
+                for _, item in ipairs(tl:GetItemListInTrack("video", tr) or {}) do
+                    local edge = math.floor(isPre and item:GetEnd() or item:GetStart())
+                    if edge == frame and item:GetMediaPoolItem() then return item end
+                end
+            end
+        end
         for _, t in ipairs(targets) do
             local shot = t.item
+            if onClipPP then
+                local ph = playheadFrame(tl)
+                shot = (ph and onClipTop(ph)) or onClipTop(t.s)
+                if not shot and not isPre then shot = t.item end
+            end
             if not (shot and shot:GetMediaPoolItem()) then
-                failed = "select a video clip (not an effect clip)"
+                failed = (onClipPP and isPre) and "no shot ends at this cut" or "select a video clip (not an effect clip)"
             else
                 local before = {}
                 for _, n in ipairs(shot:GetFusionCompNameList() or {}) do before[n] = true end
@@ -1325,7 +2131,8 @@ local function applyEffect(effect, targetsOverride)
     local playhead = tl:GetCurrentTimecode()
     -- A Pre runs out exactly where the clip starts; a Post starts at its head.
     local isPre = (effect.cat == "PRE")
-    local key  = effect.name:lower()
+    -- per timeline rate: the same preset lands at another length on a 29.97 timeline
+    local key  = effect.name:lower() .. "@" .. tostring(effect.pack and Bins.rateTag(tl, effect.pack) or "")
     local full = (natural and natural > 0) and natural or nil
     local function lengthOf(item) return math.floor(item:GetEnd()) - math.floor(item:GetStart()) end
 
@@ -1337,8 +2144,9 @@ local function applyEffect(effect, targetsOverride)
         if mode == "PLAYHEAD" then return t.playhead end
         if mode == "ONCUT" then return t.s - math.floor(len / 2) end
         if mode then return t.s end
-        return isPre and (t.s - len) or t.s
+        return isPre and ((t.preCut or t.s) - len) or t.s
     end
+    Bins.preNote = nil
 
     for _, t in ipairs(targets) do
         local span = t.e - t.s
@@ -1359,6 +2167,13 @@ local function applyEffect(effect, targetsOverride)
             if trueLength[key] and expect < trueLength[key] then
                 request = math.max(1, math.floor(expect * request / trueLength[key] + 0.5))
             end
+        end
+        -- a Pre needs footage before the cut at the clip's head. Short of it, it still goes on: shortened to the
+        -- frames there are, or with none at all (the clip starts the timeline) on the clip's own end cut
+        if isPre and not mode and t.s - expect < tl:GetStartFrame() then
+            local room = t.s - tl:GetStartFrame()
+            if room < 1 then t.preCut, room = t.e, span; Bins.preNote = " at the clip's end (nothing before it)" end
+            if room < expect then request = math.max(1, math.floor(room * request / expect + 0.5)); expect = room end
         end
         local at = anchor(t, expect)
         if not at then
@@ -1382,8 +2197,12 @@ local function applyEffect(effect, targetsOverride)
                     if (isPre or mode == "ONCUT") and fixed ~= at then
                         tl:DeleteClips({ item }, false)
                         if fixed < tl:GetStartFrame() then
-                            item = nil
-                            failed = "not enough footage before this cut"
+                            -- longer than the frames before the cut: shortened to fit them
+                            local room = (t.preCut or t.s) - tl:GetStartFrame()
+                            request = math.max(1, math.floor(room * request / got + 0.5))
+                            item = place(mp, preset, dest, tl:GetStartFrame(), request)
+                            if item then got = lengthOf(item)
+                            else failed = "Resolve refused the corrected placement" end
                         else
                             item = place(mp, preset, dest, fixed, request)
                             if item then got = lengthOf(item)
@@ -1415,7 +2234,7 @@ local function applyEffect(effect, targetsOverride)
     if playhead then tl:SetCurrentTimecode(playhead) end
     if placed == 0 then return "Failed: " .. (failed or "unknown error") end
     local msg = displayName(effect.name) .. " -> " .. (dropped or natural or "?") .. "f on "
-                .. placed .. " clip" .. (placed == 1 and "" or "s")
+                .. placed .. " clip" .. (placed == 1 and "" or "s") .. (Bins.preNote or "")
     if failed then msg = msg .. "  (" .. (#targets - placed) .. " failed)" end
     return msg
 end
@@ -1839,6 +2658,10 @@ local rootGroup = { ID = "root", Spacing = 6, Weight = 1,
                   StyleSheet = "color:#FFFFFF;font-weight:700;letter-spacing:1px;", Text = "" },
         ui:Button{ ID = "UpdateBarGo", Text = "UPDATE", Weight = 0, MinimumSize = { 120, 32 } },
     },
+    -- shown only when this Resolve can't place effects (older than 21.1, or the free version): why + what to do
+    ui:Label{ ID = "ResolveWarn", Weight = 0, Hidden = true, WordWrap = true, MinimumSize = { 0, 48 },
+              Alignment = { AlignHCenter = true, AlignVCenter = true },
+              StyleSheet = "color:#FFFFFF;font-weight:700;background:" .. RED_DIM .. ";padding:6px;", Text = "" },
     ui:HGroup(Bins.L.row),
     ui:HGroup(tabRow),
     effectsSection,
@@ -1893,6 +2716,7 @@ local APPLY_SETS = {
     lyric   = { { "AT CLIP START", "START" }, { "AT PLAYHEAD", "PLAYHEAD" }, { "FIT TO CLIP", "FIT" } },
     overlay = { { "AT CLIP START", "START" }, { "ON CUT", "ONCUT" }, { "FULL CLIP", "FULL" } },
     clip    = { { "DUPLICATE + APPLY", "DUPLICATE" }, { "APPLY TO CLIP", "DIRECT" } },
+    carrier = { { "APPLY ABOVE CLIP", "DUPLICATE" } },   -- always a new clip over the shot
 }
 local APPLY_SLOTS = { "ApplyPre", "ApplyBoth", "ApplyPost" }
 local applyActions = { "PRE", "BOTH", "POST" }
@@ -1900,6 +2724,7 @@ local applyActions = { "PRE", "BOTH", "POST" }
 local function placementMode(group)
     if group then
         if group.pre or group.post then return "prepost" end
+        if group.only and group.only.carrier then return "carrier" end
         if group.only and group.only.clip then return "clip" end
         local sec = sectionOf(group.type)
         if sec == "TEXT" then return LYRIC_CATS[group.type] and "lyric" or "text" end
@@ -2524,9 +3349,26 @@ end
 win.On.List.CurrentItemChanged = guard(selectRow)
 win.On.List.ItemClicked        = guard(selectRow)
 
+-- The Hub needs DaVinci Resolve Studio 21.1 or newer (older versions lack API calls it uses; the free version
+-- can't place the effects). Returns what to tell the customer, or nil when this Resolve is fine.
+function Bins.resolveProblem(product, version)
+    product, version = tostring(product or ""), tostring(version or "")
+    if product ~= "" and not product:find("Studio", 1, true) then
+        return "You're using the free version of DaVinci Resolve. VFX HUB needs DaVinci Resolve Studio.\n"
+            .. "Every effect still works: drag it from Effects > 2WINVISUALS on the Edit page."
+    end
+    local major, minor = version:match("^(%d+)%.(%d+)")
+    major, minor = tonumber(major), tonumber(minor)
+    if major and (major < 21 or (major == 21 and minor < 1)) then
+        return "You're using DaVinci Resolve " .. version:match("^%d+%.%d+[%.%d]*") .. ". VFX HUB needs Resolve 21.1 or newer.\n"
+            .. "Update DaVinci Resolve (free update from blackmagicdesign.com), then open the Hub again."
+    end
+end
+
 local function apply(which)
     if not selectedGroup then itm.Status.Text = "pick an effect first" return end
     itm.Status.Text = applyGroup(selectedGroup, which)
+    if Bins.resolveWarn then itm.Status.Text = itm.Status.Text .. "  -  see the message at the top" end
     if tostring(itm.Status.Text):lower():find("fail") then noteProblem(displayName(selectedGroup.base) .. ": " .. itm.Status.Text) end
 end
 
@@ -2957,9 +3799,25 @@ if fileExists(CORE_DIR .. "/rolled_back.txt") then
     os.remove(CORE_DIR .. "/rolled_back.txt")
     itm.Status.Text = "the last update didn't start, so the previous version was restored"
 end
+-- Resolve too old or free: say so up front instead of PRE / POST quietly doing nothing.
+-- Self-test "FAKERESOLVE|<product>|<version>" pretends to be another Resolve.
+do
+    local okP, product = pcall(function() return resolve:GetProductName() end)
+    local okV, version = pcall(function() return resolve:GetVersionString() end)
+    local fp, fv = selftestSpec:match("^FAKERESOLVE|(.-)|(.*)$")
+    if fp then product, version, okP, okV = fp, fv, true, true; Bins.L.hold = 6 end
+    Bins.resolveWarn = Bins.resolveProblem(okP and product, okV and version)
+    if Bins.resolveWarn then
+        itm.ResolveWarn.Text = Bins.resolveWarn; itm.ResolveWarn.Hidden = false
+        pcall(function() win:RecalcLayout() end)
+    end
+end
 local startupChecked = false
 while not closed do
     disp:StepLoop(0)
+    -- closed during StepLoop: the widgets are gone, and touching them errors ("index field 'Icon'"),
+    -- which the launcher counts as a failed version and rolls back (seen 2026-10-24)
+    if closed then break end
     if not startupChecked then
         -- once the window is showing: product list + update check (a second or two)
         startupChecked = true
@@ -2976,7 +3834,7 @@ while not closed do
             end
         end)
     end
-    processLayout()
+    pcall(processLayout)   -- layout and animations are cosmetic: an error there must not end the Hub
     if Bins.L.right then
         local g = win.Geometry
         if g and g[3] ~= Bins.L.lastW then
@@ -3003,7 +3861,8 @@ while not closed do
             if Bins.L.queue and #Bins.L.queue > 0 then Bins.L.pending = table.remove(Bins.L.queue, 1) end
         end
     end
-    advanceAnimations()
+    if closed then break end
+    pcall(advanceAnimations)
     bmd.wait(0.01)
     if selftestStart and os.clock() - selftestStart > (Bins.L.hold or 2) then
         local f = io.open(HUB_DIR .. "/.selftest_result", "w")
@@ -3020,6 +3879,7 @@ while not closed do
                 .. "\nupdateinfo=" .. tostring(itm.UpdateInfo.Text)
                 .. "\nstore=" .. #STORE_ORDER .. "\nstoreids=" .. table.concat(STORE_ORDER, ",") .. "\nstatus=" .. tostring(itm.Status.Text)
                 .. "\nsnaprow_hidden=" .. tostring(itm.SnapRow and itm.SnapRow.Hidden) .. " logoframe_end=" .. tostring(logoFrame) .. "/" .. tostring(logoAnimation and logoAnimation.count)
+                .. "\nresolvewarn=" .. tostring(Bins.resolveWarn):gsub("\n", " ")
                 .. "\napply=" .. selftestApply .. "\n")
             f:close()
         end
