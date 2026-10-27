@@ -38,7 +38,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.9.11"
+local HUB_VERSION = "1.9.12"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -2695,7 +2695,8 @@ win = disp:AddWindow({
 
 itm = win:GetItems()
 local tree = itm.List
-tree.ColumnWidth[0] = 640
+-- a small base width: the one column stretches to fill the list, so it never needs a sideways scrollbar
+tree.ColumnWidth[0] = 50
 
 --------------------------------------------------------------------
 -- Effects list
@@ -2762,18 +2763,27 @@ local previewHeight = 0
 local layoutPending = 0
 
 
+-- RecalcLayout resets the window minimum to the layout's own (too small: the ADD-ONS page then
+-- slid its text over the list), so the minimum we want goes back on after every relayout.
 local function processLayout()
-    if layoutPending > 0 then win:RecalcLayout(); layoutPending = layoutPending - 1 end
+    if layoutPending > 0 then
+        win:RecalcLayout(); layoutPending = layoutPending - 1
+        if Bins.L.minNow then win.MinimumSize = Bins.L.minNow end
+    end
 end
 
 local function fitPanels()
     local minimum = Bins.L.minH() + previewHeight
-    win.MinimumSize = { Bins.L.minW(), minimum }
+    -- the ADD-ONS page needs room for at least two products above its buttons (the column fits at its minimum)
+    if itm.StoreSection and not itm.StoreSection.Hidden and not Bins.L.compact then minimum = math.max(minimum, 800) end
+    Bins.L.minNow = { Bins.L.minW(), minimum }
+    win.MinimumSize = Bins.L.minNow
     local geometry = win.Geometry
     if geometry and geometry[4] < minimum then
         win.Geometry = { geometry[1], geometry[2], math.max(Bins.L.minW(), geometry[3]), minimum }
     end
     win:RecalcLayout()
+    win.MinimumSize = Bins.L.minNow
     layoutPending = 20
 end
 
@@ -2814,7 +2824,7 @@ local function populate()
             row.ToolTip[0] = (have and "Ready to place" or "Preset file missing - reinstall this pack")
                              .. "  |  " .. group.pack.name
             if group.thumb then row.Icon[0] = ui:Icon({ File = group.thumb }) end
-            row.SizeHint[0] = Bins.L.compact and { 380, 72 } or { 640, 116 }
+            row.SizeHint[0] = Bins.L.compact and { 50, 72 } or { 50, 116 }   -- height only: the width follows the list
             tree:AddTopLevelItem(row)
             rowGroup[row.Text[0]] = group
             if group.animation then animatedRows[#animatedRows + 1] = { row = row, animation = group.animation } end
@@ -3036,7 +3046,7 @@ function Bins.L.apply(mode, remember)
     end
     if itm.SnapSaveBox then itm.SnapSaveBox.Hidden = not compact end
     tree.IconSize = compact and { 106, 60 } or { 176, 99 }
-    tree.ColumnWidth[0] = compact and 290 or 640
+    tree.ColumnWidth[0] = 50
     Bins.L.dress()
     -- no preview panel in the column, so its toggle goes too and the search bar takes the width
     -- remembered from the clicks (the toggle starts ON); reading it back right after the window opens is not reliable
@@ -3149,7 +3159,7 @@ local function populateStore()
                 local cover = Bins.coverPath(product)
                 if cover and fileExists(cover) then row.Icon[0] = ui:Icon{ File = cover }
                 else local blank = Bins.L.icon("coverblank"); if blank then row.Icon[0] = blank end end
-                row.SizeHint[0] = Bins.L.compact and { 380, 58 } or { 640, 84 }
+                row.SizeHint[0] = Bins.L.compact and { 50, 58 } or { 50, 84 }
                 list:AddTopLevelItem(row)
                 storeRows[row.Text[0]] = product
                 if have then owned = owned + 1 elseif product.soon then soon = soon + 1 else available = available + 1 end
@@ -3886,6 +3896,14 @@ while not closed do
         elseif selftestStart and mode == "WIDER" then   -- self-test only: pretend the customer dragged the edge
             local g = win.Geometry
             win.Geometry = { g[1], g[2], g[3] + 60, g[4] - 40 }
+        elseif selftestStart and mode == "NARROW" then  -- self-test only: dragged in as far as it goes
+            local g = win.Geometry
+            win.Geometry = { g[1], g[2], Bins.L.minW(), g[4] }
+        elseif selftestStart and mode == "SHORT" then   -- self-test only: dragged up as far as it goes
+            local g = win.Geometry
+            win.Geometry = { g[1], g[2], g[3], 1 }
+            local mn = win.MinimumSize
+            selftestApply = selftestApply .. "minsize=" .. tostring(mn and mn[1]) .. "x" .. tostring(mn and mn[2]) .. " "
         elseif selftestStart and (mode == "STORE" or mode == "AUTO") then
             guard(function() setTab(mode == "STORE" and "STORE" or "auto-vfx") end)()   -- self-test only
         else
