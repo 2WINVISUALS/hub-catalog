@@ -38,7 +38,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.9.8"
+local HUB_VERSION = "1.9.9"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -2599,7 +2599,7 @@ local effectsSection = ui:VGroup{
 
 local storeSection = ui:VGroup{
     ID = "StoreSection", Weight = 1, Spacing = 8, Hidden = true,
-    ui:Label{ Weight = 0, Alignment = { AlignHCenter = true }, WordWrap = true,
+    ui:Label{ ID = "StoreIntro", Weight = 0, Alignment = { AlignHCenter = true }, WordWrap = true,
               Text = "<span style='color:#C9C9CF;font-size:13px;'>Expand the Hub with more packs and add-ons.<br>"
                   .. "Anything you install shows up here as INSTALLED and in your LIBRARY.</span>" },
     ui:Tree{
@@ -2956,7 +2956,16 @@ function Bins.L.dress()
     if itm.StoreList then
         itm.StoreList.ColumnWidth[0] = c and 220 or 430
         itm.StoreList.ColumnWidth[1] = c and 130 or 180
+        -- ADD-ONS page: its full-size minimums made the column wider and squeezed the list under the info text
+        itm.StoreList.MinimumSize = { 0, c and 110 or 200 }
     end
+    if itm.StoreIntro then itm.StoreIntro.Hidden = c end
+    if itm.StoreInfo then itm.StoreInfo.MinimumSize = { 0, c and 40 or 60 } end
+    if itm.UpdateInfo then itm.UpdateInfo.MinimumSize = { 0, c and 36 or 44 } end
+    put("StoreGet", app, c and 100 or 200, c and 40 or 48); put("StoreVisit", app, c and 100 or 200, c and 40 or 48)
+    put("UpdateCheck", nil, c and 100 or 200, 40); put("UpdateInstall", nil, c and 100 or 200, 40)
+    put("SupportMail", nil, c and 100 or 200, 40)
+    put("SupportApp", nil, c and 90 or 160, 40); put("SupportGmail", nil, c and 90 or 160, 40); put("SupportCopy", nil, c and 90 or 160, 40)
 end
 
 -- A spot the customer set themselves: fractions of the usable screen, one per side.
