@@ -38,7 +38,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.9.12"
+local HUB_VERSION = "1.9.13"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -2775,7 +2775,10 @@ end
 local function fitPanels()
     local minimum = Bins.L.minH() + previewHeight
     -- the ADD-ONS page needs room for at least two products above its buttons (the column fits at its minimum)
-    if itm.StoreSection and not itm.StoreSection.Hidden and not Bins.L.compact then minimum = math.max(minimum, 800) end
+    if itm.StoreSection and not itm.StoreSection.Hidden then
+        if not Bins.L.compact then minimum = math.max(minimum, 800) end
+        minimum = minimum + (Bins.L.infoExtra or 0)   -- a selected product's longer description
+    end
     Bins.L.minNow = { Bins.L.minW(), minimum }
     win.MinimumSize = Bins.L.minNow
     local geometry = win.Geometry
@@ -3143,6 +3146,8 @@ local function populateStore()
     local list = itm.StoreList
     list:Clear()
     storeRows = {}
+    Bins.L.infoExtra = 0   -- back to the short summary text below
+    itm.StoreInfo.MinimumSize = { 0, Bins.L.compact and 40 or 60 }
     local owned, available, soon = 0, 0, 0
     -- available first, then coming soon, then what's installed
     for pass = 1, 3 do
@@ -3462,6 +3467,21 @@ local function selectProduct(ev)
         .. (have and "<br><span style='color:#7A7A82;'>Installed</span>"
             or (product.soon and "<br><span style='color:#7A7A82;'>Coming soon</span>" or ""))
     itm.StoreGet.Text = have and "INSTALLED" or (product.soon and "COMING SOON" or "GET IT")
+    -- tall enough for the name, the wrapped description and the status line (it was cut off);
+    -- the extra height goes onto the window minimum so the list keeps its room
+    local g = win.Geometry
+    local width = math.max(200, (g and g[3] or 700) - 40)
+    local lines = 1 + math.max(1, math.ceil(#(product.desc or "") * 7.5 / width)) + ((have or product.soon) and 1 or 0)
+    local base = Bins.L.compact and 40 or 60
+    local height = math.max(base, lines * 19 + 12)
+    itm.StoreInfo.MinimumSize = { 0, height }
+    Bins.L.infoExtra = height - base
+    fitPanels()
+end
+function Bins.selectProduct(product)   -- self-test: select a product without a click
+    for key, p in pairs(storeRows) do
+        if p == product then selectProduct({ item = { Text = { [0] = key } } }) end
+    end
 end
 win.On.StoreList.ItemClicked = guard(selectProduct)
 win.On.StoreList.CurrentItemChanged = guard(selectProduct)
@@ -3899,6 +3919,12 @@ while not closed do
         elseif selftestStart and mode == "NARROW" then  -- self-test only: dragged in as far as it goes
             local g = win.Geometry
             win.Geometry = { g[1], g[2], Bins.L.minW(), g[4] }
+        elseif selftestStart and mode == "PICK" then   -- self-test only: select the longest description
+            local best
+            for _, id in ipairs(STORE_ORDER) do
+                if not best or #(STORE[id].desc or "") > #(best.desc or "") then best = STORE[id] end
+            end
+            if best then guard(function() Bins.selectProduct(best) end)() end
         elseif selftestStart and mode == "SHORT" then   -- self-test only: dragged up as far as it goes
             local g = win.Geometry
             win.Geometry = { g[1], g[2], g[3], 1 }

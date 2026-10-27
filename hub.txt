@@ -1,6 +1,7 @@
-version = 1.9.12
+version = 1.9.13
 file = hub.lua
-sha256 = f05678ca4ef10e7072d21304c75d378019878b47f1ac803792b6e1b3bbdf96d8
+sha256 = 2bd47f0a2b55bde7b3ba3d8becf66016611190ad190144ec1c6eea4aeef5dcfd
+notes = ADD-ONS: a selected product's full description shows (it was cut off)
 notes = LIBRARY and ADD-ONS lists shrink with the window - no more sideways scrollbar
 notes = The window can't be made so short that the ADD-ONS page overlaps itself
 notes = ADD-ONS list rows are single cards that follow the window width, like the LIBRARY
