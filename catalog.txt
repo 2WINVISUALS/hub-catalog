@@ -3,3 +3,4 @@
 mv-essentials-1 | MV Essentials 1 | 19 transitions: flashes, glow flashes, blurs, shakes, zooms and slides. | https://store.2winvisuals.com | pack
 mv-essentials-2 | MV Essentials 2 |  | https://store.2winvisuals.com | pack,soon
 mv-animated-titles | MV Animated Titles | Animated music video titles - real Fusion titles you place above a clip and edit in the Inspector. | https://titles.2winvisuals.com | pack
+mv-motion-blur | MV Motion Blur | Real motion blur on your cuts - Pre / Post blur hits shaped by the Effect Graph, plus a whole-clip blur. | https://2winvisuals.gumroad.com/l/motionblur | pack
