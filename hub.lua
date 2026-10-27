@@ -38,7 +38,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.9.10"
+local HUB_VERSION = "1.9.11"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -2607,7 +2607,8 @@ local storeSection = ui:VGroup{
                   .. "Anything you install shows up here as INSTALLED and in your LIBRARY.</span>" },
     ui:Tree{
         ID = "StoreList", Weight = 1, MinimumSize = { 0, 200 }, IconSize = { 76, 76 },
-        RootIsDecorated = false, HeaderHidden = true, Indentation = 0, ColumnCount = 2,
+        -- one column, like the LIBRARY list: each row is a single card that follows the window width
+        RootIsDecorated = false, HeaderHidden = true, Indentation = 0, ColumnCount = 1,
         SelectionBehavior = "SelectRows",
         Events = { ItemClicked = true, CurrentItemChanged = true, ItemDoubleClicked = true },
     },
@@ -2695,8 +2696,6 @@ win = disp:AddWindow({
 itm = win:GetItems()
 local tree = itm.List
 tree.ColumnWidth[0] = 640
-itm.StoreList.ColumnWidth[0] = 430
-itm.StoreList.ColumnWidth[1] = 180
 
 --------------------------------------------------------------------
 -- Effects list
@@ -2957,8 +2956,6 @@ function Bins.L.dress()
     put("ApplyPre", app, c and 70 or 150, 48); put("ApplyBoth", app, c and 70 or 180, 48); put("ApplyPost", app, c and 70 or 150, 48)
     if itm.List then itm.List.MinimumSize = { 0, c and 150 or 220 } end
     if itm.StoreList then
-        itm.StoreList.ColumnWidth[0] = c and 220 or 430
-        itm.StoreList.ColumnWidth[1] = c and 130 or 180
         -- ADD-ONS page: its full-size minimums made the column wider and squeezed the list under the info text
         itm.StoreList.MinimumSize = { 0, c and 110 or 200 }
         itm.StoreList.IconSize = c and { 50, 50 } or { 76, 76 }
@@ -3145,13 +3142,14 @@ local function populateStore()
             local group = have and 3 or (product.soon and 2 or 1)
             if group == pass then
                 local row = list:NewItem()
-                row.Text[0] = product.name:upper()
-                row.Text[1] = have and "INSTALLED" or (product.soon and "COMING SOON" or "GET IT  >")
+                -- status after the name, the way LIBRARY rows carry "PRE / POST"
+                row.Text[0] = product.name:upper() .. "   "
+                              .. (have and "INSTALLED" or (product.soon and "COMING SOON" or "GET IT  >"))
                 row.ToolTip[0] = product.desc or ""
                 local cover = Bins.coverPath(product)
                 if cover and fileExists(cover) then row.Icon[0] = ui:Icon{ File = cover }
                 else local blank = Bins.L.icon("coverblank"); if blank then row.Icon[0] = blank end end
-                row.SizeHint[0] = Bins.L.compact and { 220, 58 } or { 430, 84 }
+                row.SizeHint[0] = Bins.L.compact and { 380, 58 } or { 640, 84 }
                 list:AddTopLevelItem(row)
                 storeRows[row.Text[0]] = product
                 if have then owned = owned + 1 elseif product.soon then soon = soon + 1 else available = available + 1 end
