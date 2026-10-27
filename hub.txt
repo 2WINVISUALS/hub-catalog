@@ -1,6 +1,7 @@
-version = 1.9.9
+version = 1.9.10
 file = hub.lua
-sha256 = 80bfa26d862e8902ef2c77f0ed4ed89fc20b4b18ae7ea799bbe9f14f55d32506
+sha256 = bee86c3cb63b028e7c92d25b55b2dcce3ecb40c92bdfc36b2c377d17351d7814
+notes = ADD-ONS shows a cover picture for each product
 notes = Fix: snapped to the side, the ADD-ONS & UPDATES page no longer widens the window or hides the product list
 notes = Pre effects always apply: shortened when there's little footage before the cut, or on the clip's end when it starts the timeline
 notes = Tells you right away if your DaVinci Resolve is too old (before 21.1) or the free version, and what to do

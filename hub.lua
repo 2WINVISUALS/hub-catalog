@@ -38,7 +38,7 @@
 ]]
 
 -- The Hub's own version. release_hub.py sets it; remote updates compare it.
-local HUB_VERSION = "1.9.9"
+local HUB_VERSION = "1.9.10"
 
 -- Where the Hub checks for updates and the product list. A remote.txt next to
 -- the Packs folder overrides it (used for testing).
@@ -2398,6 +2398,9 @@ Bins.L.png = {
     right = "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",
     full  = "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",
     save  = "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",
+    -- transparent: keeps the name of an ADD-ONS row without a cover in line with the others
+    -- (full cover size: a row reserves only the picture's own size)
+    coverblank = "iVBORw0KGgoAAAANSUhEUgAAAJgAAACYCAYAAAAYwiAhAAAAcElEQVR42u3BAQ0AAADCoPdPbQ8HFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/BhppwABkzBLogAAAABJRU5ErkJggg==",
 }
 function Bins.L.icon(name)
     local path = HUB_DIR .. "/UI/snap2_" .. name .. ".png"
@@ -2603,7 +2606,7 @@ local storeSection = ui:VGroup{
               Text = "<span style='color:#C9C9CF;font-size:13px;'>Expand the Hub with more packs and add-ons.<br>"
                   .. "Anything you install shows up here as INSTALLED and in your LIBRARY.</span>" },
     ui:Tree{
-        ID = "StoreList", Weight = 1, MinimumSize = { 0, 200 },
+        ID = "StoreList", Weight = 1, MinimumSize = { 0, 200 }, IconSize = { 76, 76 },
         RootIsDecorated = false, HeaderHidden = true, Indentation = 0, ColumnCount = 2,
         SelectionBehavior = "SelectRows",
         Events = { ItemClicked = true, CurrentItemChanged = true, ItemDoubleClicked = true },
@@ -2958,6 +2961,8 @@ function Bins.L.dress()
         itm.StoreList.ColumnWidth[1] = c and 130 or 180
         -- ADD-ONS page: its full-size minimums made the column wider and squeezed the list under the info text
         itm.StoreList.MinimumSize = { 0, c and 110 or 200 }
+        itm.StoreList.IconSize = c and { 50, 50 } or { 76, 76 }
+        if Bins.populateStore and itm.StoreSection and not itm.StoreSection.Hidden then Bins.populateStore() end   -- row heights
     end
     if itm.StoreIntro then itm.StoreIntro.Hidden = c end
     if itm.StoreInfo then itm.StoreInfo.MinimumSize = { 0, c and 40 or 60 } end
@@ -3109,6 +3114,24 @@ end
 
 local storeRows, selectedProduct = {}, nil
 
+-- Product covers (catalog column 6): each is downloaded once and kept beside the catalog
+-- cache, named after the id + image file, so a new picture needs a new file name in the catalog.
+function Bins.coverPath(product)
+    local file = product.image and product.image:match("([%w%-_%.]+)$")
+    if not (file and file:match("%.[pP][nN][gG]$") or file and file:match("%.[jJ][pP][eE]?[gG]$")) then return nil end
+    return HUB_DIR .. "/cover_" .. product.id .. "_" .. file
+end
+function Bins.fetchCovers()
+    for _, id in ipairs(STORE_ORDER) do
+        local path = Bins.coverPath(STORE[id])
+        if path and not fileExists(path) and download(STORE[id].image, path) then
+            local head = (readAll(path) or ""):sub(1, 4)
+            -- keep it only if it really is a PNG or JPEG (not an error page)
+            if head ~= "\137PNG" and head:sub(1, 3) ~= "\255\216\255" then os.remove(path) end
+        end
+    end
+end
+
 local function populateStore()
     local list = itm.StoreList
     list:Clear()
@@ -3125,7 +3148,10 @@ local function populateStore()
                 row.Text[0] = product.name:upper()
                 row.Text[1] = have and "INSTALLED" or (product.soon and "COMING SOON" or "GET IT  >")
                 row.ToolTip[0] = product.desc or ""
-                row.SizeHint[0] = { 430, 48 }
+                local cover = Bins.coverPath(product)
+                if cover and fileExists(cover) then row.Icon[0] = ui:Icon{ File = cover }
+                else local blank = Bins.L.icon("coverblank"); if blank then row.Icon[0] = blank end end
+                row.SizeHint[0] = Bins.L.compact and { 220, 58 } or { 430, 84 }
                 list:AddTopLevelItem(row)
                 storeRows[row.Text[0]] = product
                 if have then owned = owned + 1 elseif product.soon then soon = soon + 1 else available = available + 1 end
@@ -3137,6 +3163,7 @@ local function populateStore()
         or  "You have everything currently available - check the store for new releases.")
         .. (soon > 0 and (" " .. soon .. " more coming soon.") or "")
 end
+Bins.populateStore = populateStore
 
 local function openUrl(url)
     if not safeUrl(url) then return false end
@@ -3503,6 +3530,7 @@ win.On.UpdateCheck.Clicked = guard(function()
     checkForUpdates()
     refreshCatalog()
     discoverPacks()
+    pcall(Bins.fetchCovers)
     showUpdateState()
     populateStore()
 end)
@@ -3833,6 +3861,7 @@ while not closed do
         pcall(function()
             refreshCatalog()
             discoverPacks()
+            pcall(Bins.fetchCovers)
             checkForUpdates()
             showUpdateState()
             if selftestSpec == "UPDATE" then runUpdate() end
